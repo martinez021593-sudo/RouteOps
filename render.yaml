@@ -1,0 +1,36 @@
+databases:
+  - name: routeops-pilot-db
+    plan: free
+    region: frankfurt
+    databaseName: routeops
+    user: routeops
+
+services:
+  - type: web
+    name: routeops-internet-pilot
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bootstrap.py && gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: routeops-pilot-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ROUTEOPS_TIMEZONE
+        value: Europe/Madrid
+      - key: SESSION_COOKIE_SECURE
+        value: "1"
+      - key: SEED_DEMO_DATA
+        value: "1"
+      - key: BOOTSTRAP_ADMIN_EMAIL
+        value: admin@routeops.local
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+      - key: BOOTSTRAP_DRIVER_PASSWORD
+        sync: false
