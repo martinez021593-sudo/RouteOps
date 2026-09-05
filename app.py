@@ -21,6 +21,7 @@ from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
 from PIL import Image, ImageOps
 from db_layer import get_db, init_schema, INTEGRITY_ERRORS, database_backend
+from intake_engine import parse_label_text, google_vision_text
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -157,6 +158,36 @@ def seed_demo_packages(db, org_id, work_day_id):
             )
             idx += 1
 
+
+
+def intake_carrier_counts(db, work_day_id, driver_id=None):
+    params = [work_day_id]
+    where_driver = ""
+    if driver_id:
+        where_driver = " AND driver_id=?"
+        params.append(driver_id)
+    rows = db.execute(
+        f"""
+        SELECT COALESCE(NULLIF(carrier,''),'unknown') carrier, COUNT(*) total,
+               COALESCE(SUM(CASE WHEN status='delivered' THEN 1 ELSE 0 END),0) delivered
+        FROM packages
+        WHERE work_day_id=? {where_driver}
+        GROUP BY COALESCE(NULLIF(carrier,''),'unknown')
+        ORDER BY total DESC
+        """, tuple(params)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def reoptimize_after_intake(db, wd, driver_id):
+    if os.environ.get("AUTO_OPTIMIZE_INTAKE", "1").strip().lower() in {"0","false","no"}:
+        return {"updated": False, "reason": "Auto-optimización desactivada"}
+    org = db.execute("SELECT * FROM organizations WHERE id=?", (get_org_id(),)).fetchone()
+    try:
+        count, km, mins, provider_name, note = optimize_driver_route(db, org, wd, driver_id, "local")
+        return {"updated": True, "stops": count, "km": round(km,1), "minutes": mins, "provider": provider_name, "note": note}
+    except Exception as exc:
+        return {"updated": False, "reason": str(exc)}
 
 def login_required(role=None):
     def deco(fn):
@@ -727,6 +758,41 @@ def workday_status(work_day_id):
     return redirect(url_for("workday_detail", work_day_id=work_day_id))
 
 
+
+@app.route("/admin/workdays/<int:work_day_id>/intake")
+@login_required("admin")
+def intake_admin_page(work_day_id):
+    db = get_db()
+    wd = get_workday(db, work_day_id)
+    counts = intake_carrier_counts(db, work_day_id)
+    by_driver = db.execute(
+        """
+        SELECT d.id,d.name,COUNT(p.id) total,
+               COALESCE(SUM(CASE WHEN p.carrier='imile' THEN 1 ELSE 0 END),0) imile,
+               COALESCE(SUM(CASE WHEN p.carrier='ecoscooting' THEN 1 ELSE 0 END),0) ecoscooting,
+               COALESCE(SUM(CASE WHEN p.carrier='agencia' THEN 1 ELSE 0 END),0) agencia,
+               COALESCE(SUM(CASE WHEN p.intake_status='review' THEN 1 ELSE 0 END),0) review,
+               COALESCE(SUM(CASE WHEN p.status='delivered' THEN 1 ELSE 0 END),0) delivered
+        FROM drivers d LEFT JOIN packages p ON p.driver_id=d.id AND p.work_day_id=?
+        WHERE d.organization_id=? AND d.active=1
+        GROUP BY d.id,d.name ORDER BY d.name
+        """, (work_day_id, get_org_id())
+    ).fetchall()
+    recent = db.execute(
+        """
+        SELECT p.id,p.code,p.tracking_code,p.carrier,p.recipient_name,p.address,p.postal_code,
+               p.route_zone,p.route_code,p.intake_confidence,p.intake_status,p.intake_scanned_at,
+               p.status,d.name driver_name,dd.name delivered_by
+        FROM packages p
+        LEFT JOIN drivers d ON d.id=p.driver_id
+        LEFT JOIN drivers dd ON dd.id=p.delivered_by_driver_id
+        WHERE p.work_day_id=? AND p.intake_source='camera'
+        ORDER BY p.id DESC LIMIT 250
+        """, (work_day_id,)
+    ).fetchall()
+    db.close()
+    return render_template("intake_admin.html", wd=wd, counts=counts, by_driver=by_driver, recent=recent)
+
 @app.route("/admin/workdays/<int:work_day_id>/packages")
 @login_required("admin")
 def packages_page(work_day_id):
@@ -1246,6 +1312,155 @@ def driver_route():
     return render_template("driver_route.html", wd=wd, packages=packages)
 
 
+
+@app.route("/driver/intake")
+@login_required("driver")
+def driver_intake():
+    db = get_db()
+    wd = active_workday_for_driver(db, get_org_id())
+    if not wd:
+        db.close()
+        flash("No hay una jornada activa.", "error")
+        return redirect(url_for("driver_home"))
+    counts = intake_carrier_counts(db, wd["id"], session["driver_id"])
+    recent = db.execute(
+        """
+        SELECT id,code,tracking_code,carrier,address,postal_code,intake_confidence,intake_status,sequence
+        FROM packages WHERE work_day_id=? AND driver_id=? AND intake_source='camera'
+        ORDER BY id DESC LIMIT 30
+        """, (wd["id"], session["driver_id"])
+    ).fetchall()
+    ocr_ready = bool(os.environ.get("GOOGLE_VISION_API_KEY","").strip() or (os.environ.get("GOOGLE_CLOUD_PROJECT","").strip() and os.environ.get("GOOGLE_APPLICATION_CREDENTIALS","").strip()))
+    db.close()
+    return render_template("driver_intake.html", wd=wd, counts=counts, recent=recent, ocr_ready=ocr_ready)
+
+
+@app.route("/api/driver/intake/capture", methods=["POST"])
+@login_required("driver")
+def api_driver_intake_capture():
+    db = get_db()
+    wd = active_workday_for_driver(db, get_org_id())
+    if not wd:
+        db.close()
+        return jsonify({"ok": False, "error": "No hay jornada activa"}), 409
+    image = request.files.get("image")
+    raw_code = (request.form.get("raw_code") or "").strip()
+    manual_carrier = (request.form.get("carrier") or "").strip().lower()
+    label_text = (request.form.get("label_text") or "").strip()
+    ocr_error = None
+    if image and image.filename:
+        image_bytes = image.read()
+        if len(image_bytes) > 8 * 1024 * 1024:
+            db.close()
+            return jsonify({"ok": False, "error": "Imagen demasiado grande"}), 413
+        detected, ocr_error = google_vision_text(image_bytes)
+        if detected:
+            label_text = detected
+    parsed = parse_label_text(label_text, raw_code)
+    if manual_carrier in {"imile","ecoscooting","agencia"}:
+        parsed["carrier"] = manual_carrier
+        parsed["carrier_reason"] = "Operadora confirmada por repartidor"
+    tracking = (parsed.get("tracking_code") or raw_code or "").strip()
+    if not tracking:
+        db.close()
+        return jsonify({"ok": False, "error": "No se pudo leer código/QR. Acerca la cámara o captura la etiqueta completa.", "ocr_error": ocr_error}), 422
+    existing = db.execute(
+        """
+        SELECT * FROM packages WHERE work_day_id=? AND (code=? OR tracking_code=? OR barcode=? OR raw_scan_code=?)
+        ORDER BY id LIMIT 1
+        """, (wd["id"], tracking, tracking, tracking, tracking)
+    ).fetchone()
+    if existing:
+        counts = intake_carrier_counts(db, wd["id"], session["driver_id"])
+        db.close()
+        return jsonify({"ok": True, "duplicate": True, "package_id": existing["id"], "carrier": existing["carrier"] or "unknown", "tracking_code": existing["tracking_code"] or existing["code"], "counts": counts, "message": "Este paquete ya estaba registrado"})
+    address = (parsed.get("address") or "").strip()
+    lat = lon = None
+    if address:
+        loc = geocode_google(address)
+        if loc:
+            lat, lon = loc
+        else:
+            parsed["intake_status"] = "review"
+    try:
+        cur = db.execute(
+            """
+            INSERT INTO packages(
+                organization_id,work_day_id,code,barcode,carrier,tracking_code,postal_code,city,
+                route_zone,route_code,weight_kg,quantity,intake_source,intake_driver_id,
+                intake_scanned_at,intake_confidence,intake_status,raw_scan_code,
+                recipient_name,phone,address,lat,lon,driver_id,status,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (get_org_id(),wd["id"],tracking,parsed.get("barcode") or tracking,parsed.get("carrier") or "unknown",tracking,
+             parsed.get("postal_code") or "",parsed.get("city") or "",parsed.get("route_zone") or "",parsed.get("route_code") or "",
+             parsed.get("weight_kg"),parsed.get("quantity") or 1,"camera",session["driver_id"],now_iso(),parsed.get("intake_confidence") or 0,
+             parsed.get("intake_status") or "review",raw_code or tracking,parsed.get("recipient_name") or "",parsed.get("phone") or "",
+             address or "PENDIENTE DE REVISIÓN",lat,lon,session["driver_id"],"pending",now_iso())
+        )
+        package_id = cur.lastrowid
+        db.execute(
+            """
+            INSERT INTO intake_events(organization_id,work_day_id,driver_id,package_id,carrier,source,confidence,status,captured_at)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            (get_org_id(),wd["id"],session["driver_id"],package_id,parsed.get("carrier") or "unknown","camera",parsed.get("intake_confidence") or 0,parsed.get("intake_status") or "review",now_iso())
+        )
+        db.commit()
+        route = {"updated": False, "reason": "Dirección sin geocodificar"}
+        if lat is not None and lon is not None:
+            route = reoptimize_after_intake(db, wd, session["driver_id"])
+            db.commit()
+        counts = intake_carrier_counts(db, wd["id"], session["driver_id"])
+        db.close()
+        return jsonify({
+            "ok": True,"package_id": package_id,"carrier": parsed.get("carrier") or "unknown","carrier_reason": parsed.get("carrier_reason"),
+            "tracking_code": tracking,"recipient_name": parsed.get("recipient_name") or "","address": address,"postal_code": parsed.get("postal_code") or "",
+            "route_zone": parsed.get("route_zone") or "","route_code": parsed.get("route_code") or "","weight_kg": parsed.get("weight_kg"),
+            "quantity": parsed.get("quantity") or 1,"confidence": parsed.get("intake_confidence") or 0,"intake_status": parsed.get("intake_status") or "review",
+            "geocoded": lat is not None and lon is not None,"route": route,"counts": counts,"ocr_error": ocr_error
+        })
+    except Exception as exc:
+        db.rollback(); db.close()
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/driver/intake/<int:package_id>/review", methods=["GET","POST"])
+@login_required("driver")
+def driver_intake_review(package_id):
+    db = get_db()
+    p = db.execute("SELECT * FROM packages WHERE id=? AND driver_id=? AND organization_id=?", (package_id, session["driver_id"], get_org_id())).fetchone()
+    if not p:
+        db.close(); abort(404)
+    if request.method == "POST":
+        carrier = request.form.get("carrier","unknown")
+        recipient = request.form.get("recipient_name","").strip()
+        address = request.form.get("address","").strip()
+        postal = request.form.get("postal_code","").strip()
+        zone = request.form.get("route_zone","").strip()
+        route_code = request.form.get("route_code","").strip()
+        tracking = request.form.get("tracking_code","").strip() or p["code"]
+        lat = lon = None
+        if address:
+            loc = geocode_google(address)
+            if loc: lat, lon = loc
+        intake_status = "ready" if address and tracking and lat is not None else "review"
+        db.execute(
+            """
+            UPDATE packages SET carrier=?,recipient_name=?,address=?,postal_code=?,route_zone=?,route_code=?,
+                tracking_code=?,barcode=?,lat=?,lon=?,intake_status=? WHERE id=?
+            """,
+            (carrier,recipient,address or "PENDIENTE DE REVISIÓN",postal,zone,route_code,tracking,tracking,lat,lon,intake_status,package_id)
+        )
+        db.commit()
+        wd = active_workday_for_driver(db, get_org_id())
+        if wd and lat is not None:
+            reoptimize_after_intake(db, wd, session["driver_id"]); db.commit()
+        db.close(); flash("Paquete actualizado.", "success")
+        return redirect(url_for("driver_intake"))
+    db.close()
+    return render_template("driver_intake_review.html", p=p)
+
 @app.route("/driver/scan")
 @login_required("driver")
 def driver_scan():
@@ -1361,9 +1576,9 @@ def deliver_package(package_id):
         SET status='delivered',delivered_at=?,failure_reason=NULL,
             proof_image=COALESCE(?,proof_image),proof_mime=COALESCE(?,proof_mime),
             proof_filename=COALESCE(?,proof_filename),delivery_lat=?,delivery_lon=?,
-            delivery_accuracy=?,notes=?
+            delivery_accuracy=?,notes=?,delivered_by_driver_id=?
         WHERE id=?
-        """, (now_iso(), proof_bytes, proof_mime, proof_filename, lat, lon, accuracy, notes, package_id)
+        """, (now_iso(), proof_bytes, proof_mime, proof_filename, lat, lon, accuracy, notes, did, package_id)
     )
     db.commit()
     db.close()

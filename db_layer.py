@@ -170,6 +170,21 @@ CREATE TABLE IF NOT EXISTS packages (
     work_day_id INTEGER NOT NULL,
     code TEXT NOT NULL,
     barcode TEXT,
+    carrier TEXT,
+    tracking_code TEXT,
+    postal_code TEXT,
+    city TEXT,
+    route_zone TEXT,
+    route_code TEXT,
+    weight_kg REAL,
+    quantity INTEGER DEFAULT 1,
+    intake_source TEXT,
+    intake_driver_id INTEGER,
+    intake_scanned_at TEXT,
+    intake_confidence REAL,
+    intake_status TEXT DEFAULT 'legacy',
+    raw_scan_code TEXT,
+    delivered_by_driver_id INTEGER,
     recipient_name TEXT,
     phone TEXT,
     address TEXT NOT NULL,
@@ -253,6 +268,23 @@ CREATE TABLE IF NOT EXISTS scan_events (
     FOREIGN KEY(driver_id) REFERENCES drivers(id),
     FOREIGN KEY(package_id) REFERENCES packages(id)
 );
+
+CREATE TABLE IF NOT EXISTS intake_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    organization_id INTEGER NOT NULL,
+    work_day_id INTEGER NOT NULL,
+    driver_id INTEGER NOT NULL,
+    package_id INTEGER,
+    carrier TEXT,
+    source TEXT NOT NULL DEFAULT 'camera',
+    confidence REAL,
+    status TEXT,
+    captured_at TEXT NOT NULL,
+    FOREIGN KEY(organization_id) REFERENCES organizations(id),
+    FOREIGN KEY(work_day_id) REFERENCES work_days(id),
+    FOREIGN KEY(driver_id) REFERENCES drivers(id),
+    FOREIGN KEY(package_id) REFERENCES packages(id)
+);
 CREATE INDEX IF NOT EXISTS idx_packages_workday ON packages(work_day_id);
 CREATE INDEX IF NOT EXISTS idx_packages_driver_day ON packages(work_day_id, driver_id);
 CREATE INDEX IF NOT EXISTS idx_packages_barcode ON packages(work_day_id, barcode);
@@ -307,6 +339,21 @@ CREATE TABLE IF NOT EXISTS packages (
     work_day_id BIGINT NOT NULL REFERENCES work_days(id),
     code TEXT NOT NULL,
     barcode TEXT,
+    carrier TEXT,
+    tracking_code TEXT,
+    postal_code TEXT,
+    city TEXT,
+    route_zone TEXT,
+    route_code TEXT,
+    weight_kg DOUBLE PRECISION,
+    quantity INTEGER DEFAULT 1,
+    intake_source TEXT,
+    intake_driver_id BIGINT REFERENCES drivers(id),
+    intake_scanned_at TEXT,
+    intake_confidence DOUBLE PRECISION,
+    intake_status TEXT DEFAULT 'legacy',
+    raw_scan_code TEXT,
+    delivered_by_driver_id BIGINT REFERENCES drivers(id),
     recipient_name TEXT,
     phone TEXT,
     address TEXT NOT NULL,
@@ -374,12 +421,63 @@ CREATE TABLE IF NOT EXISTS scan_events (
     scan_type TEXT NOT NULL DEFAULT 'lookup',
     captured_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS intake_events (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id),
+    work_day_id BIGINT NOT NULL REFERENCES work_days(id),
+    driver_id BIGINT NOT NULL REFERENCES drivers(id),
+    package_id BIGINT REFERENCES packages(id),
+    carrier TEXT,
+    source TEXT NOT NULL DEFAULT 'camera',
+    confidence DOUBLE PRECISION,
+    status TEXT,
+    captured_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_packages_workday ON packages(work_day_id);
 CREATE INDEX IF NOT EXISTS idx_packages_driver_day ON packages(work_day_id, driver_id);
 CREATE INDEX IF NOT EXISTS idx_packages_barcode ON packages(work_day_id, barcode);
 CREATE INDEX IF NOT EXISTS idx_locations_driver_day ON location_updates(work_day_id, driver_id, id);
 """
 
+
+
+PACKAGE_EXTRA_COLUMNS = {
+    "carrier": "TEXT",
+    "tracking_code": "TEXT",
+    "postal_code": "TEXT",
+    "city": "TEXT",
+    "route_zone": "TEXT",
+    "route_code": "TEXT",
+    "weight_kg": "DOUBLE PRECISION",
+    "quantity": "INTEGER DEFAULT 1",
+    "intake_source": "TEXT",
+    "intake_driver_id": "BIGINT",
+    "intake_scanned_at": "TEXT",
+    "intake_confidence": "DOUBLE PRECISION",
+    "intake_status": "TEXT DEFAULT 'legacy'",
+    "raw_scan_code": "TEXT",
+    "delivered_by_driver_id": "BIGINT",
+}
+
+def ensure_package_columns(db):
+    if db.backend == "postgresql":
+        for name, typ in PACKAGE_EXTRA_COLUMNS.items():
+            db.execute(f"ALTER TABLE packages ADD COLUMN IF NOT EXISTS {name} {typ}")
+        db.commit()
+        return
+    existing = {row["name"] for row in db.execute("PRAGMA table_info(packages)").fetchall()}
+    sqlite_types = {
+        "carrier": "TEXT", "tracking_code": "TEXT", "postal_code": "TEXT", "city": "TEXT",
+        "route_zone": "TEXT", "route_code": "TEXT", "weight_kg": "REAL", "quantity": "INTEGER DEFAULT 1",
+        "intake_source": "TEXT", "intake_driver_id": "INTEGER", "intake_scanned_at": "TEXT",
+        "intake_confidence": "REAL", "intake_status": "TEXT DEFAULT 'legacy'", "raw_scan_code": "TEXT",
+        "delivered_by_driver_id": "INTEGER"
+    }
+    for name, typ in sqlite_types.items():
+        if name not in existing:
+            db.execute(f"ALTER TABLE packages ADD COLUMN {name} {typ}")
+    db.commit()
 
 def init_schema(db=None):
     owns = db is None
@@ -393,5 +491,6 @@ def init_schema(db=None):
     else:
         db.conn.executescript(script)
     db.commit()
+    ensure_package_columns(db)
     if owns:
         db.close()

@@ -6,6 +6,7 @@
 <div class="toolbar">
   <div class="action-row">
     <a class="btn ghost" href="{{url_for('packages_page',work_day_id=wd.id)}}">📦 Paquetes</a>
+<a class="btn ghost" href="{{url_for('intake_admin_page',work_day_id=wd.id)}}">▣ Multi-Carrier Intake</a>
     <a class="btn ghost" href="{{url_for('routes_page',work_day_id=wd.id)}}">↝ Rutas</a>
     <a class="btn ghost" href="{{url_for('live_map',work_day_id=wd.id)}}">⌖ Tracking</a>
     <a class="btn ghost" href="{{url_for('settlements_page',work_day_id=wd.id)}}">€ Liquidaciones</a>

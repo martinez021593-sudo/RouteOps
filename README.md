@@ -1,53 +1,26 @@
-# RouteOps V0.3.0 — Internet Pilot
+# RouteOps V0.3.1 — Multi-Carrier Intake + Camera Intake
 
-Versión enfocada exclusivamente en resolver la distancia Colombia ↔ España.
+## Qué añade
+- Recepción continua con cámara del repartidor.
+- QR/barcode prioritario.
+- OCR opcional de etiqueta completa con Google Cloud Vision.
+- Detección iMile / Ecoscooting / tercera operadora.
+- Extracción y normalización de tracking, dirección, CP, zona/ruta, peso y cantidad.
+- El paquete queda asignado al repartidor que lo escaneó.
+- Contadores por empresa y por repartidor.
+- Registro del repartidor que finalmente entregó cada paquete.
+- Estado `ready` / `review`; nunca inventa una dirección faltante.
+- Geocodificación y reoptimización local tras cada lectura válida.
+- Panel admin Multi-Carrier Intake.
 
-## Estado
-- ✅ Web pública preparada para HTTPS.
-- ✅ PostgreSQL en cloud mediante `DATABASE_URL`.
-- ✅ SQLite como fallback para ejecutar localmente.
-- ✅ Login administrador/repartidor.
-- ✅ Jornadas.
-- ✅ Paquetes CSV/XLSX.
-- ✅ Asignación a repartidores.
-- ✅ Rutas locales / Google opcional.
-- ✅ QR/barcode.
-- ✅ Tracking GPS.
-- ✅ Entrega/incidencia.
-- ✅ Evidencia fotográfica persistida en DB para el piloto.
-- ✅ Liquidaciones.
-- ✅ PWA.
-- ✅ `render.yaml` para desplegar Web + PostgreSQL.
-- ✅ Dockerfile como alternativa de hosting.
+## OCR
+Para leer la información impresa completa configura en Render `GOOGLE_VISION_API_KEY`. Sin esa clave el QR/barcode sigue funcionando, pero la dirección puede requerir revisión.
 
-## No es todavía producción
-V0.3.0 es un Internet Pilot de una sola organización. Se ha evitado añadir nuevas funciones logísticas para aislar y validar conectividad remota.
+## Por qué la ruta se optimiza localmente durante la recepción
+No conviene llamar Google Route Optimization después de cada paquete porque genera una solicitud de pago por cada escaneo. V0.3.1 reordena localmente en tiempo real y permite ejecutar Google Road al terminar el lote.
 
-## Probar localmente en Windows
-1. Ejecuta `install_and_run.bat`.
-2. Abre `http://127.0.0.1:5000`.
-3. Sin `DATABASE_URL`, se utiliza `routeops_v030.db` SQLite.
+## Privacidad
+Las etiquetas contienen datos personales. Esta versión no guarda el texto OCR completo ni la foto de intake por defecto; conserva solamente los campos necesarios para reparto.
 
-## Publicar en Internet
-Lee `README_DEPLOY_RENDER.md`.
-
-## Datos demo locales
-Admin:
-- `admin@routeops.local`
-- `demo123`
-
-Repartidor:
-- `carlos`
-- `1234`
-
-En Render las contraseñas iniciales se establecen como secretos al crear el Blueprint.
-
-## Seguridad del piloto
-- cookies `HttpOnly` y `SameSite=Lax`;
-- `Secure` activado en cloud;
-- contraseña hasheada;
-- credenciales fuera del repositorio;
-- `ProxyFix` para HTTPS detrás del proxy de Render;
-- fotos accesibles únicamente con sesión de la misma organización.
-
-Pendiente antes de comercializar: CSRF completo, cambio obligatorio de contraseña, recuperación de cuenta, MFA opcional, auditoría, rate limiting y política de retención de GPS/evidencias.
+## Deploy
+Sube todos los archivos de esta carpeta a la raíz del mismo repositorio GitHub. Render redeployará la URL existente.
