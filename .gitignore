@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+routeops_v03.db
+.env
+uploads/*
+!uploads/.gitkeep
+
+certs/

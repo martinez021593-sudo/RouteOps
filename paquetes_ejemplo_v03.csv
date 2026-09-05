@@ -1,0 +1,9 @@
+codigo,barcode,cliente,telefono,direccion,pais_origen,empresa,zona,tipo_paquete,peso_kg,prioridad,caracteristicas,lat,lon
+V03-0001,843799000001,Cliente 1,600000001,"Calle de Alcalá 42, Madrid",Alemania,Empresa 1,Centro,estandar,1.2,normal,,40.419963,-3.697113
+V03-0002,843799000002,Cliente 2,600000002,"Gran Vía 32, Madrid",Francia,Empresa 2,Centro,documento,0.4,urgente,,40.420155,-3.704466
+V03-0003,843799000003,Cliente 3,600000003,"Calle de Atocha 27, Madrid",Italia,Empresa 3,Norte,estandar,2.1,normal,,40.413914,-3.701664
+V03-0004,843799000004,Cliente 4,600000004,"Calle de Serrano 55, Madrid",Portugal,Empresa 2,Norte,fragil,3.2,normal,"frágil",40.428035,-3.686341
+V03-0005,843799000005,Cliente 5,600000005,"Paseo de la Castellana 95, Madrid",Bélgica,Empresa 3,Sur,voluminoso,12.5,normal,"voluminoso",40.446306,-3.691630
+V03-0006,843799000006,Cliente 6,600000006,"Calle de Toledo 70, Madrid",Países Bajos,Empresa 1,Sur,estandar,1.8,baja,,40.408655,-3.710766
+V03-0007,843799000007,Cliente 7,600000007,"Calle de Goya 18, Madrid",Italia,Empresa 3,Norte,estandar,1.0,normal,,40.424316,-3.675079
+V03-0008,843799000008,Cliente 8,600000008,"Calle Mayor 20, Madrid",España,Empresa X,Oeste,refrigerado,5.0,urgente,"mantener frío",40.415280,-3.708500

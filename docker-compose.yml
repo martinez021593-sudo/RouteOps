@@ -1,0 +1,13 @@
+services:
+  routeops:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      SECRET_KEY: "cambia-esta-clave-en-cloud"
+      ROUTEOPS_DATA_DIR: "/data"
+      ROUTEOPS_SECURE_COOKIES: "0"
+    volumes:
+      - routeops_data:/data
+volumes:
+  routeops_data:

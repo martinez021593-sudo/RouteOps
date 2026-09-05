@@ -1,0 +1,7 @@
+codigo,barcode,cliente,telefono,direccion,conductor,lat,lon
+MAD-0001,843700000001,Cliente Uno,600000001,"Calle de Alcala 42, Madrid",Carlos,40.419963,-3.697113
+MAD-0002,843700000002,Cliente Dos,600000002,"Gran Via 32, Madrid",Carlos,40.420155,-3.704466
+MAD-0003,843700000003,Cliente Tres,600000003,"Calle de Atocha 27, Madrid",Carlos,40.413914,-3.701664
+MAD-0004,843700000004,Cliente Cuatro,600000004,"Calle de Serrano 55, Madrid",Juan,40.428035,-3.686341
+MAD-0005,843700000005,Cliente Cinco,600000005,"Paseo de la Castellana 95, Madrid",Juan,40.446306,-3.691630
+MAD-0006,843700000006,Cliente Seis,600000006,"Calle de Toledo 70, Madrid",Miguel,40.408655,-3.710766
