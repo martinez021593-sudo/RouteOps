@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Jornadas · RouteOps{% endblock %}
+{% block header %}Jornadas{% endblock %}
+{% block subheader %}Cada día queda separado del historial anterior{% endblock %}
+{% block content %}
+<div class="split-grid">
+  <div class="card">
+    <h2>Nueva jornada</h2>
+    <form method="post" class="form-grid">
+      <label>Fecha<input type="date" name="work_date" value="{{today}}" required></label>
+      <label>Nombre<input name="name" value="Jornada principal" required></label>
+      <div><button class="btn primary">Crear jornada</button></div>
+    </form>
+  </div>
+  <div class="card soft">
+    <h3>Modelo V0.3.0</h3>
+    <p>Paquetes, rutas, tracking y liquidaciones pertenecen a una jornada concreta. Ya no se acumulan entre días.</p>
+  </div>
+</div>
+<div class="card">
+  <div class="table-wrap"><table>
+    <thead><tr><th>Fecha</th><th>Jornada</th><th>Estado</th><th>Paquetes</th><th>Entregados</th><th>Fallidos</th><th></th></tr></thead>
+    <tbody>
+    {% for w in workdays %}
+      <tr><td>{{w.work_date}}</td><td><strong>{{w.name}}</strong></td><td><span class="status {{w.status}}">{{w.status}}</span></td>
+      <td>{{w.packages}}</td><td>{{w.delivered}}</td><td>{{w.failed}}</td>
+      <td><a class="btn tiny ghost" href="{{url_for('workday_detail',work_day_id=w.id)}}">Abrir</a></td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+{% endblock %}

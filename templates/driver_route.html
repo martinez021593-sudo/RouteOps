@@ -1,0 +1,18 @@
+{% extends "mobile_base.html" %}
+{% block title %}Mi ruta · RouteOps{% endblock %}
+{% block content %}
+<div class="mobile-title-row"><div><p class="eyebrow">{{wd.work_date}}</p><h1>Mi ruta</h1></div><a class="btn tiny ghost" href="{{url_for('driver_scan')}}">▣ Scan</a></div>
+{% if packages %}
+<div class="stop-list">
+{% for p in packages %}
+<a class="stop-item" href="{{url_for('driver_package',package_id=p.id)}}">
+  <span class="stop-seq">{{p.sequence or '•'}}</span>
+  <div class="stop-info"><strong>{{p.code}}</strong><small>{{p.address}}</small><small>{{p.recipient_name or ''}}</small></div>
+  <span class="status {{p.status}}">{{p.status}}</span>
+</a>
+{% endfor %}
+</div>
+{% else %}
+<div class="mobile-card success-card"><h2>✓ Ruta terminada</h2><p>No quedan paquetes sin entregar.</p></div>
+{% endif %}
+{% endblock %}

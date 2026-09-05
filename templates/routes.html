@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Rutas · RouteOps{% endblock %}
+{% block header %}Optimización de rutas{% endblock %}
+{% block subheader %}{{wd.work_date}} · {{wd.name}}{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <a class="btn ghost" href="{{url_for('workday_detail',work_day_id=wd.id)}}">← Jornada</a>
+  <a class="btn ghost" href="{{url_for('live_map',work_day_id=wd.id)}}">Tracking en vivo →</a>
+</div>
+<div class="notice {% if google_ready %}success-note{% else %}warn-note{% endif %}">
+  {% if google_ready %}
+  <strong>Google Road listo.</strong> Puedes usar Route Optimization API para ordenar paradas sobre la red vial.
+  {% else %}
+  <strong>Google Road no configurado.</strong> El modo local funciona sin credenciales. Configura Google Cloud en <code>.env</code> cuando quieras probar ruteo vial.
+  {% endif %}
+</div>
+<div class="driver-cards vertical-gap">
+{% for d in drivers %}
+  <div class="route-card">
+    <div class="driver-card">
+      <span class="avatar">{{d.name[0]}}</span>
+      <div><strong>{{d.name}}</strong><small>{{d.stops}} paquetes · {{d.geocoded}} con GPS · {{d.delivered}} entregados</small></div>
+    </div>
+    <div class="action-row">
+      <form method="post" action="{{url_for('optimize_route',work_day_id=wd.id,driver_id=d.id)}}">
+        <input type="hidden" name="provider" value="local">
+        <button class="btn ghost">Optimizar Local</button>
+      </form>
+      <form method="post" action="{{url_for('optimize_route',work_day_id=wd.id,driver_id=d.id)}}">
+        <input type="hidden" name="provider" value="google">
+        <button class="btn primary" {% if not google_ready %}disabled title="Configura Google Cloud primero"{% endif %}>Google Road</button>
+      </form>
+    </div>
+  </div>
+{% endfor %}
+</div>
+<div class="card">
+  <h2>Historial de optimizaciones</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Hora</th><th>Repartidor</th><th>Motor</th><th>Paradas</th><th>Km</th><th>Min</th><th>Detalle</th></tr></thead>
+    <tbody>
+    {% for r in runs %}
+    <tr><td>{{r.created_at[11:19]}}</td><td>{{r.driver_name}}</td><td><span class="pill neutral">{{r.provider}}</span></td>
+    <td>{{r.stop_count}}</td><td>{{"%.1f"|format(r.total_distance_km or 0)}}</td><td>{{r.estimated_minutes}}</td><td>{{r.provider_note}}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+{% endblock %}

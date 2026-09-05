@@ -5,7 +5,6 @@ import json
 import math
 import os
 import secrets
-import sqlite3
 from datetime import datetime, date, time, timezone
 from functools import wraps
 from pathlib import Path
@@ -19,7 +18,9 @@ from flask import (
 from openpyxl import load_workbook
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
-from lan_utils import get_lan_ip, qr_png_bytes
+from werkzeug.middleware.proxy_fix import ProxyFix
+from PIL import Image, ImageOps
+from db_layer import get_db, init_schema, INTEGRITY_ERRORS, database_backend
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -38,11 +39,8 @@ def load_env_file():
 
 load_env_file()
 
-DATA_DIR = Path(os.environ.get("ROUTEOPS_DATA_DIR", str(BASE_DIR))).resolve()
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = DATA_DIR / "routeops_v03.db"
-UPLOAD_DIR = DATA_DIR / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR = BASE_DIR / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
 TIMEZONE_NAME = os.environ.get("ROUTEOPS_TIMEZONE", "Europe/Madrid")
 try:
     APP_TZ = ZoneInfo(TIMEZONE_NAME)
@@ -50,12 +48,13 @@ except Exception:
     APP_TZ = timezone.utc
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "routeops-v03-local-" + secrets.token_hex(16))
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+app.secret_key = os.environ.get("SECRET_KEY", "routeops-v030-local-" + secrets.token_hex(16))
+app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-if os.environ.get("ROUTEOPS_SECURE_COOKIES", "0") == "1":
-    app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("SESSION_COOKIE_SECURE", "0").strip().lower() in {"1","true","yes"}
+app.permanent_session_lifetime = 60 * 60 * 24 * 7
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 ALLOWED_IMAGE_EXT = {"png", "jpg", "jpeg", "webp"}
 
 
@@ -67,219 +66,9 @@ def now_iso():
     return now_local().isoformat(timespec="seconds")
 
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    return conn
-
-
 def init_db():
     db = get_db()
-    db.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS organizations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            timezone TEXT NOT NULL DEFAULT 'Europe/Madrid',
-            currency TEXT NOT NULL DEFAULT 'EUR',
-            depot_lat REAL,
-            depot_lon REAL,
-            created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS drivers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            organization_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            email TEXT,
-            phone TEXT,
-            pay_per_delivery REAL NOT NULL DEFAULT 0.85,
-            active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(organization_id) REFERENCES organizations(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            organization_id INTEGER NOT NULL,
-            email TEXT,
-            username TEXT,
-            password_hash TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('admin','driver')),
-            driver_id INTEGER,
-            UNIQUE(organization_id, email),
-            UNIQUE(organization_id, username),
-            FOREIGN KEY(organization_id) REFERENCES organizations(id),
-            FOREIGN KEY(driver_id) REFERENCES drivers(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS work_days (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            organization_id INTEGER NOT NULL,
-            work_date TEXT NOT NULL,
-            name TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'planning'
-                CHECK(status IN ('planning','active','closed')),
-            created_at TEXT NOT NULL,
-            activated_at TEXT,
-            closed_at TEXT,
-            UNIQUE(organization_id, work_date, name),
-            FOREIGN KEY(organization_id) REFERENCES organizations(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS packages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            organization_id INTEGER NOT NULL,
-            work_day_id INTEGER NOT NULL,
-            code TEXT NOT NULL,
-            barcode TEXT,
-            recipient_name TEXT,
-            phone TEXT,
-            address TEXT NOT NULL,
-            origin_country TEXT,
-            carrier TEXT,
-            zone TEXT,
-            package_type TEXT,
-            weight_kg REAL,
-            priority TEXT NOT NULL DEFAULT 'normal',
-            special_characteristics TEXT,
-            lat REAL,
-            lon REAL,
-            driver_id INTEGER,
-            assigned_by TEXT,
-            dispatch_rule_id INTEGER,
-            dispatch_reason TEXT,
-            classification_status TEXT NOT NULL DEFAULT 'unreviewed',
-            status TEXT NOT NULL DEFAULT 'pending'
-                CHECK(status IN ('pending','delivered','failed')),
-            sequence INTEGER,
-            created_at TEXT NOT NULL,
-            delivered_at TEXT,
-            failure_reason TEXT,
-            proof_photo TEXT,
-            delivery_lat REAL,
-            delivery_lon REAL,
-            delivery_accuracy REAL,
-            notes TEXT,
-            UNIQUE(work_day_id, code),
-            FOREIGN KEY(organization_id) REFERENCES organizations(id),
-            FOREIGN KEY(work_day_id) REFERENCES work_days(id),
-            FOREIGN KEY(driver_id) REFERENCES drivers(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS route_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            organization_id INTEGER NOT NULL,
-            work_day_id INTEGER NOT NULL,
-            driver_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            provider TEXT NOT NULL DEFAULT 'local',
-            total_distance_km REAL DEFAULT 0,
-            estimated_minutes INTEGER DEFAULT 0,
-            stop_count INTEGER DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'published',
-            provider_note TEXT,
-            FOREIGN KEY(organization_id) REFERENCES organizations(id),
-            FOREIGN KEY(work_day_id) REFERENCES work_days(id),
-            FOREIGN KEY(driver_id) REFERENCES drivers(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS settlements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            organization_id INTEGER NOT NULL,
-            work_day_id INTEGER NOT NULL,
-            driver_id INTEGER NOT NULL,
-            delivered_count INTEGER NOT NULL DEFAULT 0,
-            amount REAL NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'pending',
-            paid_at TEXT,
-            UNIQUE(work_day_id, driver_id),
-            FOREIGN KEY(organization_id) REFERENCES organizations(id),
-            FOREIGN KEY(work_day_id) REFERENCES work_days(id),
-            FOREIGN KEY(driver_id) REFERENCES drivers(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS location_updates (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            organization_id INTEGER NOT NULL,
-            work_day_id INTEGER NOT NULL,
-            driver_id INTEGER NOT NULL,
-            lat REAL NOT NULL,
-            lon REAL NOT NULL,
-            accuracy REAL,
-            speed REAL,
-            heading REAL,
-            captured_at TEXT NOT NULL,
-            FOREIGN KEY(organization_id) REFERENCES organizations(id),
-            FOREIGN KEY(work_day_id) REFERENCES work_days(id),
-            FOREIGN KEY(driver_id) REFERENCES drivers(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS dispatch_rules (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            organization_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            origin_country TEXT,
-            carrier TEXT,
-            zone TEXT,
-            package_type TEXT,
-            min_weight_kg REAL,
-            max_weight_kg REAL,
-            priority_value TEXT,
-            characteristic_contains TEXT,
-            target_driver_id INTEGER NOT NULL,
-            rule_priority INTEGER NOT NULL DEFAULT 100,
-            active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(organization_id) REFERENCES organizations(id),
-            FOREIGN KEY(target_driver_id) REFERENCES drivers(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS dispatch_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            organization_id INTEGER NOT NULL,
-            work_day_id INTEGER NOT NULL,
-            package_id INTEGER NOT NULL,
-            previous_driver_id INTEGER,
-            new_driver_id INTEGER,
-            assignment_source TEXT NOT NULL,
-            dispatch_rule_id INTEGER,
-            reason TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(organization_id) REFERENCES organizations(id),
-            FOREIGN KEY(work_day_id) REFERENCES work_days(id),
-            FOREIGN KEY(package_id) REFERENCES packages(id),
-            FOREIGN KEY(previous_driver_id) REFERENCES drivers(id),
-            FOREIGN KEY(new_driver_id) REFERENCES drivers(id),
-            FOREIGN KEY(dispatch_rule_id) REFERENCES dispatch_rules(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS scan_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            organization_id INTEGER NOT NULL,
-            work_day_id INTEGER NOT NULL,
-            driver_id INTEGER,
-            raw_code TEXT NOT NULL,
-            package_id INTEGER,
-            scan_type TEXT NOT NULL DEFAULT 'lookup',
-            captured_at TEXT NOT NULL,
-            FOREIGN KEY(organization_id) REFERENCES organizations(id),
-            FOREIGN KEY(work_day_id) REFERENCES work_days(id),
-            FOREIGN KEY(driver_id) REFERENCES drivers(id),
-            FOREIGN KEY(package_id) REFERENCES packages(id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_packages_workday ON packages(work_day_id);
-        CREATE INDEX IF NOT EXISTS idx_packages_driver_day ON packages(work_day_id, driver_id);
-        CREATE INDEX IF NOT EXISTS idx_packages_barcode ON packages(work_day_id, barcode);
-        CREATE INDEX IF NOT EXISTS idx_locations_driver_day ON location_updates(work_day_id, driver_id, id);
-        CREATE INDEX IF NOT EXISTS idx_dispatch_rules_org ON dispatch_rules(organization_id, active, rule_priority);
-        CREATE INDEX IF NOT EXISTS idx_dispatch_history_day ON dispatch_history(work_day_id, package_id);
-        """
-    )
-
+    init_schema(db)
     if db.execute("SELECT COUNT(*) c FROM organizations").fetchone()["c"] == 0:
         depot_lat = _float_env("DEPOT_LAT")
         depot_lon = _float_env("DEPOT_LON")
@@ -302,29 +91,31 @@ def init_db():
     if db.execute("SELECT COUNT(*) c FROM users").fetchone()["c"] == 0:
         db.execute(
             "INSERT INTO users(organization_id,email,username,password_hash,role) VALUES(?,?,?,?,?)",
-            (org_id, "admin@routeops.local", "admin", generate_password_hash("demo123"), "admin")
+            (org_id, os.environ.get("BOOTSTRAP_ADMIN_EMAIL", "admin@routeops.local"), "admin", generate_password_hash(os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", "demo123")), "admin")
         )
         for d in db.execute("SELECT * FROM drivers WHERE organization_id=? ORDER BY id", (org_id,)):
             db.execute(
                 "INSERT INTO users(organization_id,email,username,password_hash,role,driver_id) VALUES(?,?,?,?,?,?)",
-                (org_id, d["email"], d["name"].lower(), generate_password_hash("1234"), "driver", d["id"])
+                (org_id, d["email"], d["name"].lower(), generate_password_hash(os.environ.get("BOOTSTRAP_DRIVER_PASSWORD", "1234")), "driver", d["id"])
             )
         db.commit()
 
-    today_s = date.today().isoformat()
-    wd = db.execute(
-        "SELECT * FROM work_days WHERE organization_id=? AND work_date=? ORDER BY id LIMIT 1",
-        (org_id, today_s)
-    ).fetchone()
-    if not wd:
-        cur = db.execute(
-            "INSERT INTO work_days(organization_id,work_date,name,status,created_at,activated_at) VALUES(?,?,?,?,?,?)",
-            (org_id, today_s, "Jornada Demo", "active", now_iso(), now_iso())
-        )
-        wd_id = cur.lastrowid
-        seed_demo_packages(db, org_id, wd_id)
-        db.commit()
+    if os.environ.get("SEED_DEMO_DATA", "1").strip().lower() not in {"0","false","no"}:
+        today_s = date.today().isoformat()
+        wd = db.execute(
+            "SELECT * FROM work_days WHERE organization_id=? AND work_date=? ORDER BY id LIMIT 1",
+            (org_id, today_s)
+        ).fetchone()
+        if not wd:
+            cur = db.execute(
+                "INSERT INTO work_days(organization_id,work_date,name,status,created_at,activated_at) VALUES(?,?,?,?,?,?)",
+                (org_id, today_s, "Jornada Demo", "active", now_iso(), now_iso())
+            )
+            wd_id = cur.lastrowid
+            seed_demo_packages(db, org_id, wd_id)
+            db.commit()
     db.close()
+
 
 
 def _float_env(key):
@@ -344,11 +135,6 @@ def seed_demo_packages(db, org_id, work_day_id):
     drivers = {r["name"]: r["id"] for r in db.execute(
         "SELECT * FROM drivers WHERE organization_id=?", (org_id,)
     )}
-    profiles = {
-        "Carlos": [("Alemania", "Empresa 1", "Centro", "estandar"), ("Francia", "Empresa 2", "Centro", "documento")],
-        "Juan": [("Italia", "Empresa 3", "Norte", "estandar"), ("Portugal", "Empresa 2", "Norte", "fragil")],
-        "Miguel": [("Países Bajos", "Empresa 1", "Sur", "estandar"), ("Bélgica", "Empresa 3", "Sur", "voluminoso")],
-    }
     idx = 1
     for name, (clat, clon) in centers.items():
         for n in range(10):
@@ -356,42 +142,20 @@ def seed_demo_packages(db, org_id, work_day_id):
             radius = 0.007 + (n % 4) * 0.0022
             lat = clat + math.sin(angle) * radius
             lon = clon + math.cos(angle) * radius
-            country, carrier, zone, ptype = profiles[name][n % len(profiles[name])]
             db.execute(
                 """
                 INSERT INTO packages(
                     organization_id,work_day_id,code,barcode,recipient_name,phone,address,
-                    origin_country,carrier,zone,package_type,weight_kg,priority,special_characteristics,
-                    lat,lon,driver_id,assigned_by,dispatch_reason,classification_status,status,created_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    lat,lon,driver_id,status,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     org_id, work_day_id, f"PK{idx:05d}", f"843700{idx:06d}",
                     f"Cliente {idx}", "", f"Parada demo {idx}, Madrid",
-                    country, carrier, zone, ptype, 1.0 + (n % 5) * 1.5,
-                    "urgente" if n == 0 else "normal",
-                    "manejo especial" if ptype in {"fragil", "voluminoso"} else "",
-                    lat, lon, drivers[name], "seed", f"Demo preasignado a {name}", "reviewed",
-                    "pending", now_iso()
+                    lat, lon, drivers[name], "pending", now_iso()
                 )
             )
             idx += 1
-
-    # Reglas demo que ilustran el proceso real de clasificación antes del ruteo.
-    if db.execute("SELECT COUNT(*) c FROM dispatch_rules WHERE organization_id=?", (org_id,)).fetchone()["c"] == 0:
-        rules = [
-            ("Empresa 1 → Carlos", None, "Empresa 1", None, None, None, None, None, None, drivers["Carlos"], 10),
-            ("Empresa 3 / Norte → Juan", None, "Empresa 3", "Norte", None, None, None, None, None, drivers["Juan"], 20),
-            ("Voluminosos → Miguel", None, None, None, "voluminoso", None, None, None, None, drivers["Miguel"], 30),
-        ]
-        for r in rules:
-            db.execute(
-                """INSERT INTO dispatch_rules(
-                    organization_id,name,origin_country,carrier,zone,package_type,min_weight_kg,max_weight_kg,
-                    priority_value,characteristic_contains,target_driver_id,rule_priority,active,created_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
-                (org_id,*r,now_iso())
-            )
 
 
 def login_required(role=None):
@@ -728,13 +492,6 @@ def read_import(file_storage):
         "phone": ["telefono", "teléfono", "phone", "movil", "móvil"],
         "address": ["direccion", "dirección", "address", "domicilio"],
         "driver": ["conductor", "repartidor", "driver"],
-        "origin_country": ["pais_origen", "país_origen", "origin_country", "origen", "pais"],
-        "carrier": ["empresa", "transportadora", "carrier", "operador", "empresa_logistica"],
-        "zone": ["zona", "zone", "sector", "area"],
-        "package_type": ["tipo", "tipo_paquete", "package_type", "categoria"],
-        "weight_kg": ["peso", "peso_kg", "weight", "weight_kg"],
-        "priority": ["prioridad", "priority"],
-        "special": ["caracteristicas", "características", "special_characteristics", "observacion_especial"],
         "lat": ["lat", "latitude", "latitud"],
         "lon": ["lon", "lng", "longitude", "longitud"],
     }
@@ -752,10 +509,15 @@ def read_import(file_storage):
         address = str(pick(row, aliases["address"])).strip()
         if not code or not address:
             continue
-        def fval(key):
-            v=pick(row,aliases[key])
-            try: return float(v) if v not in (None,"") else None
-            except Exception: return None
+        lat_v, lon_v = pick(row, aliases["lat"]), pick(row, aliases["lon"])
+        try:
+            lat_v = float(lat_v) if lat_v != "" else None
+        except Exception:
+            lat_v = None
+        try:
+            lon_v = float(lon_v) if lon_v != "" else None
+        except Exception:
+            lon_v = None
         barcode = str(pick(row, aliases["barcode"])).strip() or code
         items.append({
             "code": code,
@@ -764,103 +526,10 @@ def read_import(file_storage):
             "phone": str(pick(row, aliases["phone"])).strip(),
             "address": address,
             "driver": str(pick(row, aliases["driver"])).strip(),
-            "origin_country": str(pick(row, aliases["origin_country"])).strip(),
-            "carrier": str(pick(row, aliases["carrier"])).strip(),
-            "zone": str(pick(row, aliases["zone"])).strip(),
-            "package_type": str(pick(row, aliases["package_type"])).strip(),
-            "weight_kg": fval("weight_kg"),
-            "priority": str(pick(row, aliases["priority"])).strip().lower() or "normal",
-            "special": str(pick(row, aliases["special"])).strip(),
-            "lat": fval("lat"),
-            "lon": fval("lon"),
+            "lat": lat_v,
+            "lon": lon_v,
         })
     return items
-
-
-def _norm(value):
-    return (str(value).strip().casefold() if value not in (None, "") else "")
-
-
-def rule_matches(rule, package):
-    checks = [
-        ("origin_country", "País"), ("carrier", "Empresa"), ("zone", "Zona"),
-        ("package_type", "Tipo"), ("priority_value", "Prioridad")
-    ]
-    reasons=[]
-    for key,label in checks:
-        expected = rule[key]
-        if expected:
-            pkg_key = "priority" if key == "priority_value" else key
-            if _norm(package[pkg_key]) != _norm(expected):
-                return False, []
-            reasons.append(f"{label}={expected}")
-    w = package["weight_kg"]
-    if rule["min_weight_kg"] is not None:
-        if w is None or float(w) < float(rule["min_weight_kg"]): return False, []
-        reasons.append(f"Peso≥{rule['min_weight_kg']}kg")
-    if rule["max_weight_kg"] is not None:
-        if w is None or float(w) > float(rule["max_weight_kg"]): return False, []
-        reasons.append(f"Peso≤{rule['max_weight_kg']}kg")
-    if rule["characteristic_contains"]:
-        token=_norm(rule["characteristic_contains"])
-        if token not in _norm(package["special_characteristics"]): return False, []
-        reasons.append(f"Característica contiene '{rule['characteristic_contains']}'")
-    return (len(reasons)>0), reasons
-
-
-def run_smart_dispatch(db, org_id, work_day_id, overwrite=False):
-    rules = db.execute(
-        "SELECT r.*,d.name driver_name FROM dispatch_rules r JOIN drivers d ON d.id=r.target_driver_id "
-        "WHERE r.organization_id=? AND r.active=1 ORDER BY r.rule_priority ASC,r.id ASC", (org_id,)
-    ).fetchall()
-    q="SELECT * FROM packages WHERE work_day_id=? AND status='pending'"
-    if not overwrite: q += " AND driver_id IS NULL"
-    packages=db.execute(q,(work_day_id,)).fetchall()
-    assigned=0; unmatched=0; changed=0
-    for p in packages:
-        match=None; reason=[]
-        for r in rules:
-            ok, why=rule_matches(r,p)
-            if ok: match=r; reason=why; break
-        if not match:
-            unmatched += 1
-            db.execute("UPDATE packages SET classification_status='exception' WHERE id=?",(p["id"],))
-            continue
-        prev=p["driver_id"]
-        db.execute(
-            """UPDATE packages SET driver_id=?,assigned_by='rule',dispatch_rule_id=?,dispatch_reason=?,
-            classification_status='auto',sequence=NULL WHERE id=?""",
-            (match["target_driver_id"],match["id"]," · ".join(reason),p["id"])
-        )
-        db.execute(
-            """INSERT INTO dispatch_history(organization_id,work_day_id,package_id,previous_driver_id,new_driver_id,
-            assignment_source,dispatch_rule_id,reason,created_at) VALUES(?,?,?,?,?,?,?,?,?)""",
-            (org_id,work_day_id,p["id"],prev,match["target_driver_id"],"rule",match["id"]," · ".join(reason),now_iso())
-        )
-        assigned += 1
-        if prev != match["target_driver_id"]: changed += 1
-    return {"processed":len(packages),"assigned":assigned,"unmatched":unmatched,"changed":changed}
-
-
-def dispatch_suggestions(db, org_id, min_samples=3, min_confidence=0.8):
-    rows=db.execute(
-        """SELECT p.carrier,p.origin_country,p.zone,p.package_type,h.new_driver_id,d.name driver_name,COUNT(*) n
-        FROM dispatch_history h JOIN packages p ON p.id=h.package_id JOIN drivers d ON d.id=h.new_driver_id
-        WHERE h.organization_id=? AND h.assignment_source='manual' AND h.new_driver_id IS NOT NULL
-        GROUP BY p.carrier,p.origin_country,p.zone,p.package_type,h.new_driver_id""",(org_id,)
-    ).fetchall()
-    groups={}
-    for r in rows:
-        key=(r["carrier"] or "",r["origin_country"] or "",r["zone"] or "",r["package_type"] or "")
-        groups.setdefault(key,[]).append(dict(r))
-    out=[]
-    for key,vals in groups.items():
-        total=sum(v["n"] for v in vals); best=max(vals,key=lambda x:x["n"])
-        conf=best["n"]/total if total else 0
-        if total>=min_samples and conf>=min_confidence and any(key):
-            out.append({"carrier":key[0],"origin_country":key[1],"zone":key[2],"package_type":key[3],
-                        "driver_id":best["new_driver_id"],"driver_name":best["driver_name"],"samples":total,"confidence":conf})
-    return sorted(out,key=lambda x:(-x["confidence"],-x["samples"]))[:20]
 
 
 @app.context_processor
@@ -997,7 +666,7 @@ def create_workday():
         db.commit()
         flash("Jornada creada.", "success")
         return redirect(url_for("workday_detail", work_day_id=cur.lastrowid))
-    except sqlite3.IntegrityError:
+    except INTEGRITY_ERRORS:
         flash("Ya existe una jornada con ese nombre en esa fecha.", "error")
         return redirect(url_for("workdays_page"))
     finally:
@@ -1113,23 +782,17 @@ def import_packages(work_day_id):
                 """
                 INSERT INTO packages(
                     organization_id,work_day_id,code,barcode,recipient_name,phone,address,
-                    origin_country,carrier,zone,package_type,weight_kg,priority,special_characteristics,
-                    lat,lon,driver_id,assigned_by,dispatch_reason,classification_status,status,created_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    lat,lon,driver_id,status,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     get_org_id(), work_day_id, it["code"], it["barcode"], it["recipient"],
-                    it["phone"], it["address"], it["origin_country"], it["carrier"], it["zone"],
-                    it["package_type"], it["weight_kg"], it["priority"], it["special"],
-                    it["lat"], it["lon"], driver_id,
-                    "import" if driver_id else None,
-                    ("Preasignado en archivo" if driver_id else None),
-                    ("reviewed" if driver_id else "unreviewed"),
+                    it["phone"], it["address"], it["lat"], it["lon"], driver_id,
                     "pending", now_iso()
                 )
             )
             created += 1
-        except sqlite3.IntegrityError:
+        except INTEGRITY_ERRORS:
             duplicated += 1
     db.commit()
     db.close()
@@ -1156,31 +819,19 @@ def add_package_manual(work_day_id):
             """
             INSERT INTO packages(
                 organization_id,work_day_id,code,barcode,recipient_name,phone,address,
-                origin_country,carrier,zone,package_type,weight_kg,priority,special_characteristics,
-                lat,lon,driver_id,assigned_by,dispatch_reason,classification_status,status,created_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                lat,lon,driver_id,status,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 get_org_id(), work_day_id, code, barcode,
                 request.form.get("recipient_name", "").strip(),
-                request.form.get("phone", "").strip(), address,
-                request.form.get("origin_country", "").strip(),
-                request.form.get("carrier", "").strip(),
-                request.form.get("zone", "").strip(),
-                request.form.get("package_type", "").strip(),
-                request.form.get("weight_kg", type=float),
-                request.form.get("priority", "normal").strip().lower() or "normal",
-                request.form.get("special_characteristics", "").strip(),
-                lat, lon, driver_id,
-                "manual" if driver_id else None,
-                "Asignación manual al crear paquete" if driver_id else None,
-                "reviewed" if driver_id else "unreviewed",
-                "pending", now_iso()
+                request.form.get("phone", "").strip(),
+                address, lat, lon, driver_id, "pending", now_iso()
             )
         )
         db.commit()
         flash("Paquete añadido.", "success")
-    except sqlite3.IntegrityError:
+    except INTEGRITY_ERRORS:
         flash("Ese código ya existe en la jornada.", "error")
     finally:
         db.close()
@@ -1193,22 +844,13 @@ def assign_package(work_day_id, package_id):
     driver_id = request.form.get("driver_id", type=int)
     db = get_db()
     get_workday(db, work_day_id)
-    p = db.execute("SELECT * FROM packages WHERE id=? AND work_day_id=?", (package_id, work_day_id)).fetchone()
-    if not p:
-        db.close(); abort(404)
     db.execute(
-        """UPDATE packages SET driver_id=?,sequence=NULL,assigned_by=?,dispatch_rule_id=NULL,
-        dispatch_reason=?,classification_status=? WHERE id=? AND work_day_id=?""",
-        (driver_id, "manual" if driver_id else None, "Asignación manual" if driver_id else None,
-         "reviewed" if driver_id else "unreviewed", package_id, work_day_id)
+        "UPDATE packages SET driver_id=?,sequence=NULL WHERE id=? AND work_day_id=?",
+        (driver_id, package_id, work_day_id)
     )
-    db.execute(
-        """INSERT INTO dispatch_history(organization_id,work_day_id,package_id,previous_driver_id,new_driver_id,
-        assignment_source,dispatch_rule_id,reason,created_at) VALUES(?,?,?,?,?,?,?,?,?)""",
-        (get_org_id(),work_day_id,package_id,p["driver_id"],driver_id,"manual",None,"Asignación manual",now_iso())
-    )
-    db.commit(); db.close()
-    return redirect(request.referrer or url_for("packages_page", work_day_id=work_day_id))
+    db.commit()
+    db.close()
+    return redirect(url_for("packages_page", work_day_id=work_day_id))
 
 
 @app.route("/admin/workdays/<int:work_day_id>/geocode", methods=["POST"])
@@ -1233,93 +875,6 @@ def geocode_missing(work_day_id):
     db.close()
     flash(f"Geocodificación: {ok}/{len(rows)} resueltas.", "success")
     return redirect(url_for("packages_page", work_day_id=work_day_id))
-
-
-@app.route("/admin/workdays/<int:work_day_id>/dispatch")
-@login_required("admin")
-def dispatch_page(work_day_id):
-    db=get_db(); wd=get_workday(db,work_day_id)
-    drivers=db.execute("SELECT * FROM drivers WHERE organization_id=? AND active=1 ORDER BY name",(get_org_id(),)).fetchall()
-    rules=db.execute("""SELECT r.*,d.name driver_name FROM dispatch_rules r JOIN drivers d ON d.id=r.target_driver_id
-        WHERE r.organization_id=? ORDER BY r.rule_priority,r.id""",(get_org_id(),)).fetchall()
-    packages=db.execute("""SELECT p.*,d.name driver_name,r.name rule_name FROM packages p
-        LEFT JOIN drivers d ON d.id=p.driver_id LEFT JOIN dispatch_rules r ON r.id=p.dispatch_rule_id
-        WHERE p.work_day_id=? ORDER BY p.id""",(work_day_id,)).fetchall()
-    summary=db.execute("""SELECT COUNT(*) total,COALESCE(SUM(driver_id IS NOT NULL),0) assigned,
-        COALESCE(SUM(driver_id IS NULL),0) unassigned,COALESCE(SUM(classification_status='exception'),0) exceptions,
-        COALESCE(SUM(assigned_by='rule'),0) automatic FROM packages WHERE work_day_id=?""",(work_day_id,)).fetchone()
-    by_driver=db.execute("""SELECT d.id,d.name,COUNT(p.id) packages FROM drivers d
-        LEFT JOIN packages p ON p.driver_id=d.id AND p.work_day_id=? WHERE d.organization_id=? AND d.active=1
-        GROUP BY d.id ORDER BY d.name""",(work_day_id,get_org_id())).fetchall()
-    suggestions=dispatch_suggestions(db,get_org_id())
-    db.close()
-    return render_template("dispatch.html",wd=wd,drivers=drivers,rules=rules,packages=packages,summary=summary,by_driver=by_driver,suggestions=suggestions)
-
-
-@app.route("/admin/workdays/<int:work_day_id>/dispatch/run",methods=["POST"])
-@login_required("admin")
-def dispatch_run(work_day_id):
-    db=get_db(); get_workday(db,work_day_id)
-    overwrite=request.form.get("overwrite")=="1"
-    result=run_smart_dispatch(db,get_org_id(),work_day_id,overwrite=overwrite)
-    db.commit(); db.close()
-    flash(f"Smart Dispatch: {result['assigned']} asignados · {result['unmatched']} excepciones · {result['processed']} procesados.","success")
-    return redirect(url_for("dispatch_page",work_day_id=work_day_id))
-
-
-@app.route("/admin/dispatch/rules",methods=["POST"])
-@login_required("admin")
-def dispatch_rule_create():
-    work_day_id=request.form.get("work_day_id",type=int)
-    driver_id=request.form.get("target_driver_id",type=int)
-    if not driver_id:
-        flash("Selecciona un repartidor destino.","error"); return redirect(url_for("dispatch_page",work_day_id=work_day_id))
-    fields={k:(request.form.get(k," ").strip() or None) for k in ["origin_country","carrier","zone","package_type","priority_value","characteristic_contains"]}
-    if not any(fields.values()) and request.form.get("min_weight_kg","").strip()=="" and request.form.get("max_weight_kg","").strip()=="":
-        flash("La regla necesita al menos una condición.","error"); return redirect(url_for("dispatch_page",work_day_id=work_day_id))
-    db=get_db()
-    d=db.execute("SELECT name FROM drivers WHERE id=? AND organization_id=?",(driver_id,get_org_id())).fetchone()
-    if not d: db.close(); abort(404)
-    name=request.form.get("name","").strip() or f"Regla → {d['name']}"
-    db.execute("""INSERT INTO dispatch_rules(organization_id,name,origin_country,carrier,zone,package_type,min_weight_kg,max_weight_kg,
-        priority_value,characteristic_contains,target_driver_id,rule_priority,active,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
-        (get_org_id(),name,fields["origin_country"],fields["carrier"],fields["zone"],fields["package_type"],
-         request.form.get("min_weight_kg",type=float),request.form.get("max_weight_kg",type=float),fields["priority_value"],
-         fields["characteristic_contains"],driver_id,request.form.get("rule_priority",type=int) or 100,now_iso()))
-    db.commit(); db.close(); flash("Regla creada.","success")
-    return redirect(url_for("dispatch_page",work_day_id=work_day_id))
-
-
-@app.route("/admin/dispatch/rules/<int:rule_id>/toggle",methods=["POST"])
-@login_required("admin")
-def dispatch_rule_toggle(rule_id):
-    work_day_id=request.form.get("work_day_id",type=int)
-    db=get_db(); r=db.execute("SELECT * FROM dispatch_rules WHERE id=? AND organization_id=?",(rule_id,get_org_id())).fetchone()
-    if not r: db.close(); abort(404)
-    db.execute("UPDATE dispatch_rules SET active=? WHERE id=?",(0 if r["active"] else 1,rule_id)); db.commit(); db.close()
-    return redirect(url_for("dispatch_page",work_day_id=work_day_id))
-
-
-@app.route("/admin/dispatch/rules/<int:rule_id>/delete",methods=["POST"])
-@login_required("admin")
-def dispatch_rule_delete(rule_id):
-    work_day_id=request.form.get("work_day_id",type=int)
-    db=get_db(); db.execute("DELETE FROM dispatch_rules WHERE id=? AND organization_id=?",(rule_id,get_org_id())); db.commit(); db.close()
-    flash("Regla eliminada.","success"); return redirect(url_for("dispatch_page",work_day_id=work_day_id))
-
-
-@app.route("/admin/dispatch/suggestion",methods=["POST"])
-@login_required("admin")
-def dispatch_accept_suggestion():
-    work_day_id=request.form.get("work_day_id",type=int); driver_id=request.form.get("driver_id",type=int)
-    db=get_db(); d=db.execute("SELECT name FROM drivers WHERE id=? AND organization_id=?",(driver_id,get_org_id())).fetchone()
-    if not d: db.close(); abort(404)
-    vals={k:(request.form.get(k,"").strip() or None) for k in ["carrier","origin_country","zone","package_type"]}
-    parts=[f"{k}={v}" for k,v in vals.items() if v]
-    db.execute("""INSERT INTO dispatch_rules(organization_id,name,origin_country,carrier,zone,package_type,target_driver_id,rule_priority,active,created_at)
-        VALUES(?,?,?,?,?,?,?,?,1,?)""",(get_org_id(),"Aprendida: "+" · ".join(parts)+f" → {d['name']}",vals["origin_country"],vals["carrier"],vals["zone"],vals["package_type"],driver_id,80,now_iso()))
-    db.commit(); db.close(); flash("Sugerencia convertida en regla.","success")
-    return redirect(url_for("dispatch_page",work_day_id=work_day_id))
 
 
 @app.route("/admin/workdays/<int:work_day_id>/routes")
@@ -1625,28 +1180,18 @@ def settings_page():
     )
 
 
-@app.route("/admin/lan")
-@login_required("admin")
-def lan_connect_page():
-    lan_ip = get_lan_ip()
-    return render_template(
-        "lan.html",
-        lan_ip=lan_ip,
-        bootstrap_url=f"http://{lan_ip}:5000",
-        secure_url=f"https://{lan_ip}:5443",
-    )
-
-
-@app.route("/admin/lan/qr.png")
-@login_required("admin")
-def lan_connect_qr():
-    lan_ip = get_lan_ip()
-    return Response(qr_png_bytes(f"http://{lan_ip}:5000"), mimetype="image/png")
-
-
 @app.route("/health")
+@app.route("/healthz")
 def health():
-    return jsonify({"ok": True, "version": "0.2.1", "mode": "app"})
+    db_ok = False
+    try:
+        db = get_db()
+        db.execute("SELECT 1").fetchone()
+        db.close()
+        db_ok = True
+    except Exception:
+        db_ok = False
+    return jsonify({"ok": db_ok, "version": "0.3.0", "database": database_backend()}), (200 if db_ok else 503)
 
 
 @app.route("/driver")
@@ -1774,14 +1319,29 @@ def driver_package(package_id):
 def deliver_package(package_id):
     did = session["driver_id"]
     photo = request.files.get("photo")
-    photo_name = None
+    proof_bytes = None
+    proof_mime = None
+    proof_filename = None
     if photo and photo.filename:
         ext = photo.filename.rsplit(".", 1)[-1].lower() if "." in photo.filename else ""
         if ext not in ALLOWED_IMAGE_EXT:
             flash("La evidencia debe ser PNG, JPG, JPEG o WEBP.", "error")
             return redirect(url_for("driver_package", package_id=package_id))
-        photo_name = f"{did}_{package_id}_{int(datetime.now().timestamp())}_{secure_filename(photo.filename)}"
-        photo.save(UPLOAD_DIR / photo_name)
+        try:
+            raw = photo.read()
+            if len(raw) > 12 * 1024 * 1024:
+                raise ValueError("archivo demasiado grande")
+            img = Image.open(io.BytesIO(raw))
+            img = ImageOps.exif_transpose(img).convert("RGB")
+            img.thumbnail((1280, 1280))
+            out = io.BytesIO()
+            img.save(out, format="JPEG", quality=72, optimize=True)
+            proof_bytes = out.getvalue()
+            proof_mime = "image/jpeg"
+            proof_filename = secure_filename(photo.filename)[:160] or f"evidencia_{package_id}.jpg"
+        except Exception:
+            flash("No se pudo procesar la foto de evidencia.", "error")
+            return redirect(url_for("driver_package", package_id=package_id))
 
     lat = request.form.get("lat", type=float)
     lon = request.form.get("lon", type=float)
@@ -1799,10 +1359,11 @@ def deliver_package(package_id):
         """
         UPDATE packages
         SET status='delivered',delivered_at=?,failure_reason=NULL,
-            proof_photo=COALESCE(?,proof_photo),delivery_lat=?,delivery_lon=?,
+            proof_image=COALESCE(?,proof_image),proof_mime=COALESCE(?,proof_mime),
+            proof_filename=COALESCE(?,proof_filename),delivery_lat=?,delivery_lon=?,
             delivery_accuracy=?,notes=?
         WHERE id=?
-        """, (now_iso(), photo_name, lat, lon, accuracy, notes, package_id)
+        """, (now_iso(), proof_bytes, proof_mime, proof_filename, lat, lon, accuracy, notes, package_id)
     )
     db.commit()
     db.close()
@@ -1868,9 +1429,21 @@ def api_driver_location():
     return jsonify({"ok": True, "captured_at": now_iso()})
 
 
+@app.route("/proof/<int:package_id>")
+@login_required()
+def proof_image(package_id):
+    db = get_db()
+    p = db.execute("SELECT organization_id,proof_image,proof_mime FROM packages WHERE id=?", (package_id,)).fetchone()
+    db.close()
+    if not p or p["organization_id"] != get_org_id() or not p["proof_image"]:
+        abort(404)
+    return Response(bytes(p["proof_image"]), mimetype=p["proof_mime"] or "image/jpeg", headers={"Cache-Control":"private, max-age=3600"})
+
+
 @app.route("/uploads/<path:name>")
 @login_required()
 def uploads(name):
+    # Legacy local evidence route kept only for older pilot data.
     return send_from_directory(UPLOAD_DIR, name)
 
 
@@ -1886,13 +1459,13 @@ def service_worker():
 
 @app.errorhandler(413)
 def too_large(_e):
-    flash("Archivo demasiado grande (máximo 16 MB).", "error")
+    flash("Archivo demasiado grande (máximo 12 MB).", "error")
     return redirect(request.referrer or url_for("home"))
 
 
 if __name__ == "__main__":
     init_db()
-    print("\\nRouteOps V0.3 local listo en http://127.0.0.1:5000")
+    print("\\nRouteOps V0.3.0 Internet Pilot local listo en http://127.0.0.1:5000")
     print("Admin: admin@routeops.local / demo123")
     print("Repartidor: carlos / 1234")
     print(f"Zona horaria: {TIMEZONE_NAME}\\n")

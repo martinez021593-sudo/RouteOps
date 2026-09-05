@@ -1,0 +1,21 @@
+ANTES DE VOLVER A RENDER, la raiz del repositorio GitHub debe contener:
+
+app.py
+db_layer.py
+bootstrap.py
+wsgi.py
+requirements.txt
+render.yaml
+Dockerfile
+Procfile
+templates/
+static/
+uploads/
+
+Si falta bootstrap.py, Render falla con:
+python: can't open file .../bootstrap.py
+
+Si falta db_layer.py, el siguiente error sera:
+ModuleNotFoundError: No module named 'db_layer'
+
+No subas el ZIP como un solo archivo. Descomprime y sube TODO EL CONTENIDO de esta carpeta a la raiz del repositorio.

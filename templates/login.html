@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RouteOps · Login</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="login-bg">
+  <div class="login-card">
+    <div class="brand login-brand"><span class="brand-pin">●</span>RouteOps</div>
+    <div class="version center">V0.3.0 INTERNET PILOT</div>
+    <h1>Gestión de última milla</h1>
+    <p class="muted">Jornadas, rutas, entregas, tracking y liquidaciones.</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category,message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+    {% endwith %}
+    <form method="post" class="stack">
+      <label>Correo o usuario<input name="identity" autocomplete="username" required></label>
+      <label>Contraseña<input type="password" name="password" autocomplete="current-password" required></label>
+      <button class="btn primary full">Iniciar sesión</button>
+    </form>
+    <div class="demo-box">
+      <strong>Demo</strong><br>
+      En local: admin@routeops.local / demo123<br>
+      En cloud: usa las contraseñas configuradas en Render
+    </div>
+  </div>
+</body>
+</html>
