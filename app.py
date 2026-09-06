@@ -770,7 +770,7 @@ def intake_admin_page(work_day_id):
         SELECT d.id,d.name,COUNT(p.id) total,
                COALESCE(SUM(CASE WHEN p.carrier='imile' THEN 1 ELSE 0 END),0) imile,
                COALESCE(SUM(CASE WHEN p.carrier='ecoscooting' THEN 1 ELSE 0 END),0) ecoscooting,
-               COALESCE(SUM(CASE WHEN p.carrier='agencia' THEN 1 ELSE 0 END),0) agencia,
+               COALESCE(SUM(CASE WHEN p.carrier IN ('tipsa','agencia') THEN 1 ELSE 0 END),0) tipsa,
                COALESCE(SUM(CASE WHEN p.intake_status='review' THEN 1 ELSE 0 END),0) review,
                COALESCE(SUM(CASE WHEN p.status='delivered' THEN 1 ELSE 0 END),0) delivered
         FROM drivers d LEFT JOIN packages p ON p.driver_id=d.id AND p.work_day_id=?
@@ -1331,8 +1331,10 @@ def driver_intake():
         """, (wd["id"], session["driver_id"])
     ).fetchall()
     ocr_ready = bool(os.environ.get("GOOGLE_VISION_API_KEY","").strip() or (os.environ.get("GOOGLE_CLOUD_PROJECT","").strip() and os.environ.get("GOOGLE_APPLICATION_CREDENTIALS","").strip()))
+    geocode_ready = bool(os.environ.get("GOOGLE_MAPS_API_KEY", "").strip())
+    ocr_debug_enabled = os.environ.get("INTAKE_OCR_DEBUG", "1").strip().lower() not in {"0","false","no"}
     db.close()
-    return render_template("driver_intake.html", wd=wd, counts=counts, recent=recent, ocr_ready=ocr_ready)
+    return render_template("driver_intake.html", wd=wd, counts=counts, recent=recent, ocr_ready=ocr_ready, geocode_ready=geocode_ready, ocr_debug_enabled=ocr_debug_enabled)
 
 
 @app.route("/api/driver/intake/capture", methods=["POST"])
@@ -1357,8 +1359,8 @@ def api_driver_intake_capture():
         if detected:
             label_text = detected
     parsed = parse_label_text(label_text, raw_code)
-    if manual_carrier in {"imile","ecoscooting","agencia"}:
-        parsed["carrier"] = manual_carrier
+    if manual_carrier in {"imile","ecoscooting","tipsa","agencia"}:
+        parsed["carrier"] = "tipsa" if manual_carrier == "agencia" else manual_carrier
         parsed["carrier_reason"] = "Operadora confirmada por repartidor"
     tracking = (parsed.get("tracking_code") or raw_code or "").strip()
     if not tracking:
@@ -1376,12 +1378,17 @@ def api_driver_intake_capture():
         return jsonify({"ok": True, "duplicate": True, "package_id": existing["id"], "carrier": existing["carrier"] or "unknown", "tracking_code": existing["tracking_code"] or existing["code"], "counts": counts, "message": "Este paquete ya estaba registrado"})
     address = (parsed.get("address") or "").strip()
     lat = lon = None
+    geocode_status = "not_requested"
     if address:
-        loc = geocode_google(address)
-        if loc:
-            lat, lon = loc
+        if os.environ.get("GOOGLE_MAPS_API_KEY", "").strip():
+            loc = geocode_google(address)
+            if loc:
+                lat, lon = loc
+                geocode_status = "ok"
+            else:
+                geocode_status = "failed"
         else:
-            parsed["intake_status"] = "review"
+            geocode_status = "not_configured"
     try:
         cur = db.execute(
             """
@@ -1418,7 +1425,10 @@ def api_driver_intake_capture():
             "tracking_code": tracking,"recipient_name": parsed.get("recipient_name") or "","address": address,"postal_code": parsed.get("postal_code") or "",
             "route_zone": parsed.get("route_zone") or "","route_code": parsed.get("route_code") or "","weight_kg": parsed.get("weight_kg"),
             "quantity": parsed.get("quantity") or 1,"confidence": parsed.get("intake_confidence") or 0,"intake_status": parsed.get("intake_status") or "review",
-            "geocoded": lat is not None and lon is not None,"route": route,"counts": counts,"ocr_error": ocr_error
+            "profile": parsed.get("profile") or "generic_v1", "missing_required": parsed.get("missing_required") or [],
+            "detected_fields": parsed.get("detected_fields") or {}, "geocoded": lat is not None and lon is not None,
+            "geocode_status": geocode_status, "route": route,"counts": counts,"ocr_error": ocr_error,
+            "ocr_debug": (label_text[:2400] if (os.environ.get("INTAKE_OCR_DEBUG", "1").strip().lower() not in {"0","false","no"}) else "")
         })
     except Exception as exc:
         db.rollback(); db.close()

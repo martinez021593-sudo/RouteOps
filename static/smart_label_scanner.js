@@ -1,4 +1,4 @@
-/* RouteOps V0.3.1.2 — Smart Label Scanner controller */
+/* RouteOps V0.3.1.3 — Smart Label Scanner + carrier profiles */
 (() => {
   'use strict';
   const root = document.getElementById('smartScanner');
@@ -33,6 +33,7 @@
   const diagEdges = document.getElementById('diagEdges');
   const diagBarcode = document.getElementById('diagBarcode');
   const diagOcr = document.getElementById('diagOcr');
+  const diagGeocode = document.getElementById('diagGeocode');
 
   let engine = null;
   let stream = null, track = null, detector = null;
@@ -55,8 +56,9 @@
   }
 
   function carrierLabel(c){
-    return c==='imile'?'iMile':(c==='ecoscooting'?'Ecoscooting':(c==='agencia'?'Agencia':'Sin identificar'));
+    return c==='imile'?'iMile':(c==='ecoscooting'?'Ecoscooting':((c==='tipsa'||c==='agencia')?'TIPSA / agencia':'Sin identificar'));
   }
+  function esc(v){return String(v??'').replace(/[&<>\"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch]));}
   function updateCounts(counts){
     const box=document.getElementById('carrierCounts');
     box.innerHTML='';
@@ -183,7 +185,10 @@
       const blob=await buildLabelBlob();const fd=new FormData();fd.append('image',blob,'label-crop.jpg');fd.append('raw_code',rawCode||'');fd.append('carrier',carrierHint.value||'');
       const r=await fetch(captureUrl,{method:'POST',body:fd});const data=await r.json();if(!r.ok||!data.ok)throw new Error(data.error||'No se pudo registrar');
       updateCounts(data.counts);const rt=data.route&&data.route.updated?`Ruta: ${data.route.stops} paradas · ${data.route.km} km aprox.`:'Ruta pendiente de dirección válida';
-      result.innerHTML=`<strong>${data.duplicate?'Ya registrado':'✓ Paquete registrado'} · ${carrierLabel(data.carrier)}</strong><small>${data.tracking_code||''}</small><small>${data.address||'Dirección pendiente de revisión'}</small><small>Confianza ${Math.round((data.confidence||0)*100)}% · ${rt}</small>${data.intake_status==='review'?`<a class="btn tiny ghost" href="/driver/intake/${data.package_id}/review">Revisar ahora</a>`:''}`;
+      const fields=data.detected_fields||{}; const missing=(data.missing_required||[]).join(', ');
+      const geo=data.geocode_status==='ok'?'Geocodificada':(data.geocode_status==='not_configured'?'Geocodificación no configurada':(data.geocode_status==='failed'?'Geocodificación falló':'Sin geocodificar'));
+      const debug=data.ocr_debug?`<details class="ocr-debug"><summary>Ver lectura OCR / parser</summary><small>Perfil: ${esc(data.profile||'')}</small><pre>${esc(data.ocr_debug)}</pre></details>`:'';
+      result.innerHTML=`<strong>${data.duplicate?'Ya registrado':'✓ Paquete registrado'} · ${esc(carrierLabel(data.carrier))}</strong><small>Tracking: ${esc(data.tracking_code||'—')}</small><small>Dirección: ${esc(data.address||'pendiente')}</small><small>Perfil: ${esc(data.profile||'—')} · Confianza ${Math.round((data.confidence||0)*100)}%</small><small>${esc(geo)} · ${esc(rt)}</small>${data.intake_status==='review'?`<small>Falta para READY: ${esc(missing||'revisión manual')}</small><a class="btn tiny ghost" href="/driver/intake/${data.package_id}/review">Revisar ahora</a>`:'<small>Estado: READY ✓</small>'}${debug}`;
       feedback();setState('success','✓ Capturado','Retira este paquete y coloca el siguiente.');stableFrames=0;previousQuad=null;lastCode='';if(!automatic)armed=false;
     }catch(e){result.innerHTML=`<strong>No registrado</strong><small>${e.message}</small>`;setState('error','Reintentar','Acerca la etiqueta completa y evita reflejos.');armed=true;}
     finally{setTimeout(()=>{busy=false;captureBtn.disabled=false;},700);}
@@ -199,6 +204,7 @@
   }catch(e){diag(diagEngine,'error','Error');setState('focus','Visión limitada','Captura manual disponible.');}
 
   diag(diagOcr,root.dataset.ocrReady==='1'?'ok':'warn',root.dataset.ocrReady==='1'?'Configurado':'Sin configurar');
+  diag(diagGeocode,root.dataset.geocodeReady==='1'?'ok':'warn',root.dataset.geocodeReady==='1'?'Configurada':'Sin configurar');
 
   startBtn.addEventListener('click',async()=>{try{await openCamera();}catch(e){diag(diagCamera,'error','Error');setState('error','Cámara no disponible',e.message);}});
   captureBtn.addEventListener('click',()=>captureFrame(lastCode||'',false));

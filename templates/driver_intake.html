@@ -15,7 +15,7 @@
   {% endfor %}
 </div>
 
-<section class="smart-scanner" id="smartScanner" data-capture-url="{{url_for('api_driver_intake_capture')}}" data-ocr-ready="{{1 if ocr_ready else 0}}">
+<section class="smart-scanner" id="smartScanner" data-capture-url="{{url_for('api_driver_intake_capture')}}" data-ocr-ready="{{1 if ocr_ready else 0}}" data-geocode-ready="{{1 if geocode_ready else 0}}" data-ocr-debug="{{1 if ocr_debug_enabled else 0}}">
   <div class="smart-video-wrap" id="videoWrap">
     <video id="intakeVideo" playsinline muted></video>
     <canvas id="guideCanvas" aria-hidden="true"></canvas>
@@ -50,13 +50,14 @@
 </div>
 
 <div class="mobile-card vision-diagnostics" id="visionDiagnostics">
-  <div class="card-head"><h3>Diagnóstico del escáner</h3><span class="pill neutral">V0.3.1.2</span></div>
+  <div class="card-head"><h3>Diagnóstico del escáner</h3><span class="pill neutral">V0.3.1.3</span></div>
   <div class="diag-grid">
     <div><span>Motor local</span><strong class="diag-value warn" id="diagEngine">Inicializando</strong></div>
     <div><span>Cámara</span><strong class="diag-value warn" id="diagCamera">Esperando</strong></div>
     <div><span>Seguimiento</span><strong class="diag-value warn" id="diagEdges">Esperando</strong></div>
     <div><span>QR / barcode</span><strong class="diag-value warn" id="diagBarcode">Esperando</strong></div>
     <div><span>Google Vision OCR</span><strong class="diag-value warn" id="diagOcr">Verificando</strong></div>
+    <div><span>Geocodificación</span><strong class="diag-value warn" id="diagGeocode">Verificando</strong></div>
   </div>
   <small class="diag-note">El seguimiento de bordes funciona localmente en RouteOps. Si falla, Capturar ahora sigue disponible.</small>
 </div>
@@ -67,7 +68,7 @@
       <option value="">Auto detectar</option>
       <option value="imile">iMile</option>
       <option value="ecoscooting">Ecoscooting</option>
-      <option value="agencia">Tercera operadora / agencia</option>
+      <option value="tipsa">TIPSA / agencia</option>
     </select>
   </label>
 </div>
@@ -91,6 +92,6 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='smart_vision.js') }}?v=0312"></script>
-<script src="{{ url_for('static', filename='smart_label_scanner.js') }}?v=0312"></script>
+<script src="{{ url_for('static', filename='smart_vision.js') }}?v=0313"></script>
+<script src="{{ url_for('static', filename='smart_label_scanner.js') }}?v=0313"></script>
 {% endblock %}

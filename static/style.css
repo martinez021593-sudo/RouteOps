@@ -36,3 +36,6 @@
 .diag-value.ok{background:#dcfce7;color:#166534}.diag-value.warn{background:#fef3c7;color:#92400e}.diag-value.error{background:#fee2e2;color:#991b1b}
 .diag-note{display:block;margin-top:10px;color:var(--muted);line-height:1.4}
 @media(max-width:420px){.smart-video-wrap{height:clamp(500px,72svh,760px)}.vision-diagnostics .diag-grid{grid-template-columns:1fr}}
+
+/* V0.3.1.3 OCR/parser diagnostics */
+.ocr-debug{margin-top:10px;border-top:1px solid var(--line);padding-top:9px}.ocr-debug summary{cursor:pointer;font-weight:700}.ocr-debug pre{white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;background:rgba(15,23,42,.05);padding:9px;border-radius:9px;font-size:11px;line-height:1.35}
