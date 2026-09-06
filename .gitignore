@@ -1,9 +1,12 @@
 .venv/
 __pycache__/
 *.pyc
-routeops_v03.db
 .env
+routeops_v030.db
+routeops_v02.db
 uploads/*
 !uploads/.gitkeep
-
 certs/
+*.pem
+*.key
+*.crt

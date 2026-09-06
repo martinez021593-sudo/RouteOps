@@ -1680,7 +1680,7 @@ def too_large(_e):
 
 if __name__ == "__main__":
     init_db()
-    print("\\nRouteOps V0.3.0 Internet Pilot local listo en http://127.0.0.1:5000")
+    print("\\nRouteOps V0.3.1.1 Smart Label Scanner local listo en http://127.0.0.1:5000")
     print("Admin: admin@routeops.local / demo123")
     print("Repartidor: carlos / 1234")
     print(f"Zona horaria: {TIMEZONE_NAME}\\n")
