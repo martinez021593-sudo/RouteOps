@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · RouteOps{% endblock %}
+{% block header %}Dashboard{% endblock %}
+{% block subheader %}Vista operativa por jornada{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <form method="get" class="inline-form">
+    <select name="work_day_id" onchange="this.form.submit()">
+      {% for w in workdays %}
+      <option value="{{w.id}}" {% if wd and w.id==wd.id %}selected{% endif %}>
+        {{w.work_date}} · {{w.name}} · {{w.status}}
+      </option>
+      {% endfor %}
+    </select>
+  </form>
+  {% if wd %}
+  <div class="action-row">
+    <a class="btn ghost" href="{{url_for('workday_detail',work_day_id=wd.id)}}">Abrir jornada</a>
+    <a class="btn ghost" href="{{url_for('live_map',work_day_id=wd.id)}}">Mapa en vivo</a>
+  </div>
+  {% endif %}
+</div>
+{% if wd %}
+<div class="kpi-grid">
+  <div class="kpi"><span>Asignados</span><strong>{{stats.assigned}}</strong></div>
+  <div class="kpi success"><span>Entregados</span><strong>{{stats.delivered}}</strong></div>
+  <div class="kpi warn"><span>Pendientes</span><strong>{{stats.pending}}</strong></div>
+  <div class="kpi danger"><span>Fallidos</span><strong>{{stats.failed}}</strong></div>
+</div>
+<div class="card">
+  <div class="card-head"><div><h2>{{wd.name}}</h2><p>{{wd.work_date}} · <span class="status {{wd.status}}">{{wd.status}}</span></p></div></div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Repartidor</th><th>Asignados</th><th>Entregados</th><th>Pendientes</th><th>Fallidos</th><th>Avance</th></tr></thead>
+    <tbody>
+    {% for d in drivers %}
+      {% set pct = ((d.delivered / d.assigned * 100) if d.assigned else 0) %}
+      <tr><td><strong>{{d.name}}</strong></td><td>{{d.assigned}}</td><td>{{d.delivered}}</td><td>{{d.pending}}</td><td>{{d.failed}}</td>
+      <td><div class="progress"><span style="width:{{pct}}%"></span></div><small>{{"%.0f"|format(pct)}}%</small></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% else %}
+<div class="empty">No hay jornadas. <a href="{{url_for('workdays_page')}}">Crea la primera.</a></div>
+{% endif %}
+{% endblock %}

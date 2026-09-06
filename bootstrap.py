@@ -3,4 +3,4 @@ from db_layer import database_backend
 
 if __name__ == "__main__":
     init_db()
-    print(f"RouteOps V0.3.1.1 database initialized ({database_backend()}).")
+    print(f"RouteOps V0.3.1.2 database initialized ({database_backend()}).")

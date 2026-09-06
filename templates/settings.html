@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Configuración · RouteOps{% endblock %}
+{% block header %}Configuración{% endblock %}
+{% block subheader %}Empresa y motores externos{% endblock %}
+{% block content %}
+<div class="split-grid">
+<div class="card">
+  <h2>Operación</h2>
+  <form method="post" class="form-grid">
+    <label>Empresa<input name="name" value="{{org.name}}"></label>
+    <label>Moneda<input name="currency" value="{{org.currency}}"></label>
+    <label class="wide">Zona horaria<input name="timezone" value="{{org.timezone}}"></label>
+    <label>Depósito lat<input type="number" step="any" name="depot_lat" value="{{org.depot_lat if org.depot_lat is not none else ''}}"></label>
+    <label>Depósito lon<input type="number" step="any" name="depot_lon" value="{{org.depot_lon if org.depot_lon is not none else ''}}"></label>
+    <div><button class="btn primary">Guardar</button></div>
+  </form>
+</div>
+<div class="card">
+  <h2>Integraciones</h2>
+  <div class="integration-row"><span>Google Geocoding</span><span class="status {{'active' if geocode_ready else 'planning'}}">{{'Configurado' if geocode_ready else 'Pendiente'}}</span></div>
+  <div class="integration-row"><span>Google Route Optimization</span><span class="status {{'active' if google_ready else 'planning'}}">{{'Configurado' if google_ready else 'Pendiente'}}</span></div>
+  <p class="muted">Las credenciales se cargan desde <code>.env</code>; nunca se escriben en la interfaz ni en el navegador.</p>
+</div>
+</div>
+{% endblock %}

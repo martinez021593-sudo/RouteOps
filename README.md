@@ -1,87 +1,98 @@
-# RouteOps V0.3.1.1 — Smart Label Scanner
+# RouteOps V0.3.1.2 — Embedded Vision Engine
 
-Actualización de RouteOps V0.3.1 enfocada en recepción rápida de paquetes por cámara.
+Actualización de RouteOps V0.3.1.1 centrada en eliminar el fallo de carga de OpenCV/CDN y mantener el Smart Label Scanner operativo incluso con conectividad irregular.
 
-## Objetivo
+## Cambio principal
 
-Que el repartidor pueda pasar paquetes frente al teléfono con mínima interacción:
+V0.3.1.1 dependía de un `opencv.js` externo. En V0.3.1.2 el seguimiento básico de etiquetas se ejecuta con un **motor de visión local incluido dentro de RouteOps**:
 
-`Etiqueta → detectar borde → estabilizar/enfocar → autocapturar → corregir perspectiva → OCR → clasificar carrier → guardar → reoptimizar → siguiente paquete`.
+- `/static/smart_vision.js`
+- `/static/smart_label_scanner.js`
 
-## Qué cambia en la cámara
+No necesita descargar OpenCV desde `docs.opencv.org` al abrir el escáner.
 
-- Vista vertical grande.
-- El vídeo usa `object-fit: contain`; no recorta los laterales para llenar el visor.
-- RouteOps solicita la cámara trasera y una resolución 4:3 alta.
-- Si la cámara expone zoom, RouteOps solicita el zoom mínimo.
-- Si expone `focusMode=continuous`, RouteOps lo solicita; si no, se usa el autofocus nativo del teléfono.
-- Si hay varias cámaras, aparece `Cambiar cámara`.
-- Si existe control de linterna, aparece `Linterna`.
+## Flujo
 
-## Seguimiento de etiqueta
+`Cámara → detectar región de etiqueta → seguir bordes → medir nitidez/estabilidad → autocaptura → enderezado local → QR/barcode + OCR → carrier → guardar → reoptimizar`.
 
-La página carga OpenCV.js desde la documentación oficial de OpenCV. El procesamiento se hace en el navegador:
+## Qué hace el Embedded Vision Engine
 
-1. Canny / bordes.
-2. Morfología para unir texto, códigos y borde exterior.
-3. Contornos.
-4. Convex hull + cuadrilátero cuando es posible.
-5. `minAreaRect` como fallback para etiquetas arrugadas.
-6. Suavizado temporal de las 4 esquinas.
-7. Medición de estabilidad y nitidez.
+1. Reduce cada frame a una resolución de análisis ligera.
+2. Calcula luminancia y contraste local.
+3. Busca superficies claras y regiones con densidad de texto/barcodes.
+4. Agrupa regiones localmente.
+5. Selecciona una región rectangular compatible con una etiqueta.
+6. Estima cuatro esquinas y las suaviza entre frames.
+7. Calcula nitidez y estabilidad.
+8. Cuando la etiqueta está estable puede autocapturar.
+9. En la captura realiza un enderezado local aproximado antes del OCR.
 
-Cuando la etiqueta llena prácticamente todo el frame, RouteOps pide `Aléjate un poco` en vez de capturar sin bordes.
+## Fallback
 
-## Autocaptura
+El botón **Capturar ahora** nunca depende del motor de bordes.
 
-Por defecto está activa. Requiere:
-- etiqueta detectada;
-- nitidez mínima;
-- movimiento bajo;
-- 5 frames estables.
+Si el motor no encuentra una etiqueta:
 
-Siempre existe `Capturar ahora` como fallback.
+`Cámara → Capturar ahora → foto completa → Google Vision OCR → revisión si hace falta`.
 
-## Corrección de perspectiva
+Por lo tanto, un fallo del seguimiento no bloquea la recepción de paquetes.
 
-Cuando hay un cuadrilátero válido, RouteOps usa `getPerspectiveTransform` + `warpPerspective` para generar un recorte frontal de la etiqueta. Solo ese JPEG se envía al endpoint de intake/Google Vision.
+## Diagnóstico nuevo
 
-Si OpenCV no carga o no logra detectar el borde, la captura manual usa el frame completo y el flujo de V0.3.1 sigue funcionando.
+El repartidor ve en pantalla:
+
+- Motor local
+- Cámara
+- Seguimiento
+- QR / barcode
+- Google Vision OCR
+
+Cada componente muestra estado disponible, esperando o error. Esto permite saber exactamente qué parte falla en un teléfono real.
+
+## Cámara
+
+- vídeo con `object-fit: contain` para evitar recorte visual;
+- visor más grande;
+- cámara trasera preferida;
+- zoom mínimo cuando el dispositivo lo expone;
+- enfoque continuo solicitado cuando el navegador lo permite;
+- linterna y cambio de cámara cuando están disponibles.
 
 ## Google Vision
 
-En Render:
+Mantén en Render:
 
 `GOOGLE_VISION_API_KEY=<tu clave>`
 
-Mantén la clave restringida a Cloud Vision API.
+También:
 
-## Actualizar la web existente
+`AUTO_OPTIMIZE_INTAKE=1`
 
-No crees otro servicio Render.
+Nunca subas estas claves a GitHub.
 
-1. Descomprime esta carpeta.
-2. Sube su contenido a la raíz del repositorio GitHub `RouteOps` reemplazando los archivos anteriores.
-3. Haz commit.
-4. Render hará redeploy automático. Si no, `Manual Deploy → Deploy latest commit`.
-5. Conserva la misma URL pública.
+## Caché/PWA
 
-## Prueba recomendada
+El Service Worker se actualizó a `routeops-v0312-shell-v1` y elimina caches anteriores al activarse. Esto evita que un móvil siga usando JavaScript viejo después del deploy.
 
-Antes de 100 paquetes:
-- 5 iMile
-- 5 Ecoscooting
-- 5 tercera operadora
+Después del primer deploy de V0.3.1.2 conviene cerrar y volver a abrir RouteOps en el teléfono. Si estaba instalada como PWA, también se puede cerrar completamente la app y abrirla de nuevo.
+
+## Prueba piloto
+
+Primero probar:
+
+- 3–5 iMile
+- 3–5 Ecoscooting
+- 3–5 tercera operadora
 
 Registrar:
-- detección correcta de bordes;
-- % autocapturado sin tocar botón;
-- % de OCR correcto;
+
 - segundos por paquete;
-- cuántos requieren revisión manual.
+- porcentaje con marco detectado;
+- porcentaje autocapturado;
+- porcentaje OCR correcto;
+- paquetes enviados a `Revisar`;
+- duplicados detectados.
 
-## Compatibilidad
+## Limitación conocida
 
-Las capacidades físicas de zoom, enfoque continuo y linterna dependen del teléfono y del navegador. RouteOps consulta `getCapabilities()` y solo intenta aplicar controles que el dispositivo expone.
-
-OpenCV.js se carga desde Internet. Si no carga, RouteOps conserva captura manual + QR/barcode + OCR del frame completo.
+El detector local está optimizado para etiquetas claras con texto/barcodes sobre paquetes de color contrastante. Una etiqueta blanca sobre un paquete muy blanco, una etiqueta muy arrugada o parcialmente tapada puede requerir **Capturar ahora**. El OCR y el registro siguen funcionando en modo manual.

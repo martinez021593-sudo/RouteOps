@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{wd.name}} · RouteOps{% endblock %}
+{% block header %}{{wd.name}}{% endblock %}
+{% block subheader %}{{wd.work_date}} · {{wd.status}}{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <div class="action-row">
+    <a class="btn ghost" href="{{url_for('packages_page',work_day_id=wd.id)}}">📦 Paquetes</a>
+<a class="btn ghost" href="{{url_for('intake_admin_page',work_day_id=wd.id)}}">▣ Multi-Carrier Intake</a>
+    <a class="btn ghost" href="{{url_for('routes_page',work_day_id=wd.id)}}">↝ Rutas</a>
+    <a class="btn ghost" href="{{url_for('live_map',work_day_id=wd.id)}}">⌖ Tracking</a>
+    <a class="btn ghost" href="{{url_for('settlements_page',work_day_id=wd.id)}}">€ Liquidaciones</a>
+  </div>
+  <div class="action-row">
+    {% if wd.status != 'active' %}
+    <form method="post" action="{{url_for('workday_status',work_day_id=wd.id)}}"><input type="hidden" name="status" value="active"><button class="btn primary">Activar</button></form>
+    {% endif %}
+    {% if wd.status != 'closed' %}
+    <form method="post" action="{{url_for('workday_status',work_day_id=wd.id)}}"><input type="hidden" name="status" value="closed"><button class="btn danger-outline">Cerrar</button></form>
+    {% endif %}
+  </div>
+</div>
+<div class="kpi-grid">
+  <div class="kpi"><span>Paquetes</span><strong>{{stats.packages}}</strong></div>
+  <div class="kpi success"><span>Entregados</span><strong>{{stats.delivered}}</strong></div>
+  <div class="kpi danger"><span>Fallidos</span><strong>{{stats.failed}}</strong></div>
+  <div class="kpi warn"><span>Sin coordenadas</span><strong>{{stats.missing_coords}}</strong></div>
+</div>
+<div class="card">
+  <h2>Carga por repartidor</h2>
+  <div class="driver-cards">
+    {% for d in drivers %}
+    <div class="driver-card"><span class="avatar">{{d.name[0]}}</span><div><strong>{{d.name}}</strong><small>{{d.packages}} paquetes</small></div></div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,96 @@
+{% extends "mobile_base.html" %}
+{% block title %}Smart Label Scanner · RouteOps{% endblock %}
+{% block content %}
+<div class="mobile-title-row smart-scan-title">
+  <div>
+    <p class="eyebrow">{{wd.name}}</p>
+    <h1>Smart Label Scanner</h1>
+  </div>
+  <a class="btn tiny ghost" href="{{url_for('driver_route')}}">Ver ruta</a>
+</div>
+
+<div class="carrier-strip compact" id="carrierCounts">
+  {% for c in counts %}
+  <div class="carrier-mini"><strong>{{c.total}}</strong><small>{{c.carrier}}</small></div>
+  {% endfor %}
+</div>
+
+<section class="smart-scanner" id="smartScanner" data-capture-url="{{url_for('api_driver_intake_capture')}}" data-ocr-ready="{{1 if ocr_ready else 0}}">
+  <div class="smart-video-wrap" id="videoWrap">
+    <video id="intakeVideo" playsinline muted></video>
+    <canvas id="guideCanvas" aria-hidden="true"></canvas>
+    <div class="scan-topbar">
+      <span class="scan-state searching" id="scanState">Preparando visión…</span>
+      <span class="scan-quality" id="qualityText">—</span>
+    </div>
+    <div class="scan-hint" id="scanHint">Abre la cámara y coloca una etiqueta completa dentro de la imagen.</div>
+    <div class="scan-counter" id="stableCounter" hidden>0/5</div>
+  </div>
+
+  <canvas id="processCanvas" hidden></canvas>
+  <canvas id="cropCanvas" hidden></canvas>
+  <canvas id="fullCanvas" hidden></canvas>
+
+  <div class="scanner-controls">
+    <button class="btn primary scan-main-btn" id="startCamera" type="button">Abrir cámara</button>
+    <button class="btn success scan-main-btn" id="captureNow" type="button" disabled>Capturar ahora</button>
+  </div>
+
+  <div class="scanner-tool-row">
+    <label class="scan-toggle"><input type="checkbox" id="autoCapture" checked><span>Autocaptura</span></label>
+    <button class="btn tiny ghost" id="torchBtn" type="button" hidden>Linterna</button>
+    <button class="btn tiny ghost" id="switchCamera" type="button" hidden>Cambiar cámara</button>
+  </div>
+</section>
+
+<div class="mobile-card camera-info" id="cameraInfo" hidden>
+  <div><strong>Cámara</strong><small id="cameraName">—</small></div>
+  <div><strong>Enfoque</strong><small id="focusInfo">Automático del dispositivo</small></div>
+  <div><strong>Zoom</strong><small id="zoomInfo">—</small></div>
+</div>
+
+<div class="mobile-card vision-diagnostics" id="visionDiagnostics">
+  <div class="card-head"><h3>Diagnóstico del escáner</h3><span class="pill neutral">V0.3.1.2</span></div>
+  <div class="diag-grid">
+    <div><span>Motor local</span><strong class="diag-value warn" id="diagEngine">Inicializando</strong></div>
+    <div><span>Cámara</span><strong class="diag-value warn" id="diagCamera">Esperando</strong></div>
+    <div><span>Seguimiento</span><strong class="diag-value warn" id="diagEdges">Esperando</strong></div>
+    <div><span>QR / barcode</span><strong class="diag-value warn" id="diagBarcode">Esperando</strong></div>
+    <div><span>Google Vision OCR</span><strong class="diag-value warn" id="diagOcr">Verificando</strong></div>
+  </div>
+  <small class="diag-note">El seguimiento de bordes funciona localmente en RouteOps. Si falla, Capturar ahora sigue disponible.</small>
+</div>
+
+<div class="mobile-card">
+  <label>Operadora (solo si RouteOps se equivoca)
+    <select id="carrierHint">
+      <option value="">Auto detectar</option>
+      <option value="imile">iMile</option>
+      <option value="ecoscooting">Ecoscooting</option>
+      <option value="agencia">Tercera operadora / agencia</option>
+    </select>
+  </label>
+</div>
+
+<div id="resultBox" class="mobile-card intake-result" aria-live="polite">
+  <strong>Listo para escanear</strong>
+  <small>{% if ocr_ready %}OCR de etiquetas configurado. Se enviará únicamente el recorte de la etiqueta cuando el borde sea detectado.{% else %}QR/barcode funcionará; configura Google Vision para extraer dirección automáticamente.{% endif %}</small>
+</div>
+
+<div class="mobile-card">
+  <div class="card-head"><h3>Últimos escaneados</h3><span class="pill neutral">{{recent|length}}</span></div>
+  <div id="recentScans" class="intake-recent">
+  {% for p in recent %}
+    <a href="{{url_for('driver_intake_review',package_id=p.id)}}" class="intake-row">
+      <span class="carrier-dot {{p.carrier or 'unknown'}}"></span>
+      <div><strong>{{p.tracking_code or p.code}}</strong><small>{{p.carrier or 'unknown'}} · {{p.address}}</small></div>
+      <span class="status {{'active' if p.intake_status=='ready' else 'failed'}}">{{p.intake_status}}</span>
+    </a>
+  {% endfor %}
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='smart_vision.js') }}?v=0312"></script>
+<script src="{{ url_for('static', filename='smart_label_scanner.js') }}?v=0312"></script>
+{% endblock %}

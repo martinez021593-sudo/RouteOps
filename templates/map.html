@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Tracking · RouteOps{% endblock %}
+{% block header %}Tracking en vivo{% endblock %}
+{% block subheader %}{{wd.work_date}} · actualización automática{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <a class="btn ghost" href="{{url_for('workday_detail',work_day_id=wd.id)}}">← Jornada</a>
+  <span class="pill neutral">Refresco 15 s</span>
+</div>
+<div class="tracking-grid">
+  <div id="liveMap" class="map-large"></div>
+  <div class="card driver-live-panel">
+    <h2>Repartidores</h2>
+    <div id="driverLiveList" class="stack"></div>
+  </div>
+</div>
+<script id="route-points" type="application/json">{{points|tojson}}</script>
+{% endblock %}
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const routePoints = JSON.parse(document.getElementById('route-points').textContent);
+const map = L.map('liveMap').setView([40.4168,-3.7038], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+const bounds = [];
+routePoints.forEach(p=>{
+  const marker = L.circleMarker([p.lat,p.lon],{
+    radius:5,
+    color:p.status==='delivered'?'#16a34a':(p.status==='failed'?'#dc2626':'#2563eb'),
+    fillOpacity:.7
+  }).addTo(map);
+  marker.bindPopup(`<b>${p.code}</b><br>${p.driver_name||'Sin asignar'}<br>${p.address}`);
+  bounds.push([p.lat,p.lon]);
+});
+if(bounds.length) map.fitBounds(bounds,{padding:[30,30]});
+
+const driverMarkers = new Map();
+const driverTrails = new Map();
+function ageText(ts){
+  if(!ts) return 'Sin señal';
+  const secs = Math.max(0, (Date.now()-new Date(ts).getTime())/1000);
+  if(secs<60) return `Hace ${Math.round(secs)} s`;
+  return `Hace ${Math.round(secs/60)} min`;
+}
+async function refreshTracking(){
+  const r = await fetch('{{url_for("api_admin_tracking",work_day_id=wd.id)}}');
+  if(!r.ok) return;
+  const data = await r.json();
+  const list = document.getElementById('driverLiveList');
+  list.innerHTML='';
+  data.drivers.forEach(d=>{
+    const item=document.createElement('div');
+    item.className='live-driver';
+    if(d.last){
+      const pos=[d.last.lat,d.last.lon];
+      if(!driverMarkers.has(d.driver_id)){
+        driverMarkers.set(d.driver_id,L.marker(pos).addTo(map));
+      } else driverMarkers.get(d.driver_id).setLatLng(pos);
+      driverMarkers.get(d.driver_id).bindPopup(`<b>${d.name}</b><br>${ageText(d.last.captured_at)}<br>Precisión: ${Math.round(d.last.accuracy||0)} m`);
+      const trail=d.track.map(x=>[x.lat,x.lon]);
+      if(driverTrails.has(d.driver_id)) driverTrails.get(d.driver_id).remove();
+      if(trail.length>1) driverTrails.set(d.driver_id,L.polyline(trail,{weight:4,opacity:.45}).addTo(map));
+      item.innerHTML=`<div><strong>${d.name}</strong><small>${ageText(d.last.captured_at)}</small></div><span class="status active">GPS</span>`;
+    } else {
+      item.innerHTML=`<div><strong>${d.name}</strong><small>Sin ubicación compartida</small></div><span class="status planning">OFF</span>`;
+    }
+    list.appendChild(item);
+  });
+}
+refreshTracking();
+setInterval(refreshTracking,15000);
+</script>
+{% endblock %}

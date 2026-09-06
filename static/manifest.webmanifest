@@ -1,0 +1,9 @@
+{
+  "name": "RouteOps Driver",
+  "short_name": "RouteOps",
+  "start_url": "/driver",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#0b1730",
+  "description": "RouteOps V0.3.1.2 Embedded Vision Engine - operación de última milla"
+}
