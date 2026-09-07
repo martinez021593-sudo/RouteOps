@@ -1,9 +1,11 @@
-ROUTEOPS V0.3.1.3
-1. Copia TODO el contenido de esta carpeta dentro de tu repositorio local RouteOps.
-2. Acepta reemplazar archivos.
-3. GitHub Desktop: Commit to main.
-4. Push origin.
-5. Espera el auto deploy de Render.
-6. Cierra y abre de nuevo la PWA en el teléfono.
-7. En Render conserva GOOGLE_VISION_API_KEY.
-8. Para optimizar rutas automáticamente agrega GOOGLE_MAPS_API_KEY con Geocoding API habilitada.
+ROUTEOPS V0.3.1.4 — INTELLIGENT OCR PIPELINE
+
+NO subas la carpeta contenedora como una carpeta nueva.
+
+1. Abre la carpeta local del repositorio RouteOps desde GitHub Desktop.
+2. Copia encima el contenido del PATCH_ONLY.
+3. Acepta reemplazar.
+4. Commit to main.
+5. Push origin.
+6. Render hará redeploy.
+7. Cierra y vuelve a abrir la PWA en el teléfono.

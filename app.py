@@ -5,6 +5,9 @@ import json
 import math
 import os
 import secrets
+import threading
+import time as time_module
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date, time, timezone
 from functools import wraps
 from pathlib import Path
@@ -21,7 +24,7 @@ from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
 from PIL import Image, ImageOps
 from db_layer import get_db, init_schema, INTEGRITY_ERRORS, database_backend
-from intake_engine import parse_label_text, google_vision_text
+from intake_engine import parse_label_text, extract_label_data
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -57,6 +60,19 @@ app.config["SESSION_COOKIE_SECURE"] = os.environ.get("SESSION_COOKIE_SECURE", "0
 app.permanent_session_lifetime = 60 * 60 * 24 * 7
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 ALLOWED_IMAGE_EXT = {"png", "jpg", "jpeg", "webp"}
+
+
+# V0.3.1.4 — background OCR queue.
+# One Gunicorn worker is used by the Render pilot, while OCR is network-bound, so two background
+# workers allow continuous scanning without blocking the camera UI.
+_OCR_WORKERS = max(1, min(4, int(os.environ.get("INTAKE_OCR_WORKERS", "2"))))
+OCR_EXECUTOR = ThreadPoolExecutor(max_workers=_OCR_WORKERS, thread_name_prefix="routeops-ocr")
+OCR_SCHEDULED = set()
+OCR_SCHEDULE_LOCK = threading.Lock()
+OCR_DEBUG_CACHE = {}
+OCR_DEBUG_LOCK = threading.Lock()
+ROUTE_REOPT_TIMERS = {}
+ROUTE_REOPT_LOCK = threading.Lock()
 
 
 def now_local():
@@ -179,10 +195,11 @@ def intake_carrier_counts(db, work_day_id, driver_id=None):
     return [dict(r) for r in rows]
 
 
-def reoptimize_after_intake(db, wd, driver_id):
+def reoptimize_after_intake(db, wd, driver_id, org_id=None):
     if os.environ.get("AUTO_OPTIMIZE_INTAKE", "1").strip().lower() in {"0","false","no"}:
         return {"updated": False, "reason": "Auto-optimización desactivada"}
-    org = db.execute("SELECT * FROM organizations WHERE id=?", (get_org_id(),)).fetchone()
+    org_id = int(org_id or get_org_id())
+    org = db.execute("SELECT * FROM organizations WHERE id=?", (org_id,)).fetchone()
     try:
         count, km, mins, provider_name, note = optimize_driver_route(db, org, wd, driver_id, "local")
         return {"updated": True, "stops": count, "km": round(km,1), "minutes": mins, "provider": provider_name, "note": note}
@@ -497,6 +514,274 @@ def geocode_google(address):
     except Exception:
         return None
     return None
+
+
+
+def _json_load_list(value):
+    if not value:
+        return []
+    try:
+        data = json.loads(value)
+        if isinstance(data, list):
+            return [str(x) for x in data if str(x).strip()]
+    except Exception:
+        pass
+    return [str(value)]
+
+
+def _clean_job_result(result):
+    # Never persist raw OCR text. Keep only operational fields needed by the authorized driver UI.
+    allowed = {
+        "package_id", "carrier", "carrier_reason", "tracking_code", "tracking_source", "barcode",
+        "recipient_name", "address", "postal_code", "city", "route_zone", "route_code",
+        "weight_kg", "quantity", "confidence", "intake_status", "profile", "missing_required",
+        "detected_fields", "geocoded", "geocode_status", "ocr_confidence", "ocr_passes",
+        "duplicate", "message",
+    }
+    return {k: v for k, v in result.items() if k in allowed}
+
+
+def _remember_ocr_debug(job_id, text):
+    if os.environ.get("INTAKE_OCR_DEBUG", "1").strip().lower() in {"0", "false", "no"}:
+        return
+    with OCR_DEBUG_LOCK:
+        OCR_DEBUG_CACHE[int(job_id)] = (time_module.time(), (text or "")[:3200])
+        # Keep only a short-lived in-memory diagnostic cache; never persist full OCR text.
+        cutoff = time_module.time() - 600
+        for key, (ts, _) in list(OCR_DEBUG_CACHE.items()):
+            if ts < cutoff:
+                OCR_DEBUG_CACHE.pop(key, None)
+
+
+def _get_ocr_debug(job_id):
+    with OCR_DEBUG_LOCK:
+        item = OCR_DEBUG_CACHE.get(int(job_id))
+        if not item:
+            return ""
+        if time_module.time() - item[0] > 600:
+            OCR_DEBUG_CACHE.pop(int(job_id), None)
+            return ""
+        return item[1]
+
+
+def _schedule_route_refresh(org_id, work_day_id, driver_id):
+    if os.environ.get("AUTO_OPTIMIZE_INTAKE", "1").strip().lower() in {"0", "false", "no"}:
+        return
+    key = (int(org_id), int(work_day_id), int(driver_id))
+
+    def run():
+        try:
+            db = get_db()
+            wd = db.execute(
+                "SELECT * FROM work_days WHERE id=? AND organization_id=?", (work_day_id, org_id)
+            ).fetchone()
+            org = db.execute("SELECT * FROM organizations WHERE id=?", (org_id,)).fetchone()
+            if wd and org:
+                try:
+                    optimize_driver_route(db, org, wd, driver_id, "local")
+                    db.commit()
+                except Exception:
+                    db.rollback()
+            db.close()
+        finally:
+            with ROUTE_REOPT_LOCK:
+                ROUTE_REOPT_TIMERS.pop(key, None)
+
+    with ROUTE_REOPT_LOCK:
+        old_timer = ROUTE_REOPT_TIMERS.get(key)
+        if old_timer:
+            old_timer.cancel()
+        # Debounce: scanning a burst of labels results in one route refresh after the burst.
+        timer = threading.Timer(1.8, run)
+        timer.daemon = True
+        ROUTE_REOPT_TIMERS[key] = timer
+        timer.start()
+
+
+def _process_intake_job(job_id):
+    db = None
+    try:
+        db = get_db()
+        job = db.execute("SELECT * FROM intake_jobs WHERE id=?", (job_id,)).fetchone()
+        if not job or job["status"] not in ("queued", "processing"):
+            return
+        db.execute(
+            "UPDATE intake_jobs SET status='processing',started_at=?,attempts=COALESCE(attempts,0)+1,error_text=NULL WHERE id=?",
+            (now_iso(), job_id),
+        )
+        db.commit()
+
+        image_data = job["image_data"]
+        if isinstance(image_data, memoryview):
+            image_data = image_data.tobytes()
+        if not image_data:
+            raise RuntimeError("La imagen de la etiqueta no está disponible")
+        raw_codes = _json_load_list(job["raw_codes"])
+        raw_code = raw_codes[0] if raw_codes else ""
+        carrier_hint = (job["carrier_hint"] or "").strip().lower()
+        if carrier_hint == "agencia":
+            carrier_hint = "tipsa"
+        if carrier_hint not in {"imile", "ecoscooting", "tipsa"}:
+            carrier_hint = ""
+
+        # High-accuracy OCR. If important fields are missing the engine automatically executes pass 2.
+        parsed = extract_label_data(
+            bytes(image_data), raw_code=raw_code, raw_codes=raw_codes, forced_carrier=carrier_hint
+        )
+        _remember_ocr_debug(job_id, parsed.pop("ocr_text", ""))
+
+        tracking = (parsed.get("tracking_code") or "").strip()
+        carrier = parsed.get("carrier") or "unknown"
+        barcode = (parsed.get("barcode") or raw_code or "").strip()
+        code = tracking or f"REVIEW-{job_id}"
+
+        # Duplicate detection is based primarily on the carrier-selected tracking, not whichever
+        # barcode happened to be seen first by the browser.
+        existing = None
+        if tracking:
+            existing = db.execute(
+                """
+                SELECT * FROM packages
+                WHERE work_day_id=? AND (tracking_code=? OR code=?)
+                ORDER BY id LIMIT 1
+                """, (job["work_day_id"], tracking, tracking)
+            ).fetchone()
+        if existing:
+            result = {
+                "package_id": existing["id"], "carrier": existing["carrier"] or carrier,
+                "tracking_code": existing["tracking_code"] or existing["code"],
+                "tracking_source": parsed.get("tracking_source") or "",
+                "barcode": barcode, "recipient_name": existing["recipient_name"] or "",
+                "address": existing["address"] or "", "postal_code": existing["postal_code"] or "",
+                "city": existing["city"] or "", "route_zone": existing["route_zone"] or "",
+                "route_code": existing["route_code"] or "", "confidence": parsed.get("intake_confidence") or 0,
+                "intake_status": existing["intake_status"] or "ready", "profile": parsed.get("profile") or "",
+                "missing_required": parsed.get("missing_required") or [], "detected_fields": parsed.get("detected_fields") or {},
+                "ocr_confidence": parsed.get("ocr_confidence"), "ocr_passes": parsed.get("ocr_passes") or 1,
+                "duplicate": True, "message": "Este tracking ya estaba registrado",
+            }
+            db.execute(
+                "UPDATE intake_jobs SET status='duplicate',package_id=?,result_json=?,image_data=NULL,completed_at=? WHERE id=?",
+                (existing["id"], json.dumps(_clean_job_result(result), ensure_ascii=False), now_iso(), job_id),
+            )
+            db.commit()
+            return
+
+        address = (parsed.get("address") or "").strip()
+        lat = lon = None
+        geocode_status = "not_requested"
+        if address:
+            if os.environ.get("GOOGLE_MAPS_API_KEY", "").strip():
+                loc = geocode_google(address)
+                if loc:
+                    lat, lon = loc
+                    geocode_status = "ok"
+                else:
+                    geocode_status = "failed"
+            else:
+                geocode_status = "not_configured"
+
+        cur = db.execute(
+            """
+            INSERT INTO packages(
+                organization_id,work_day_id,code,barcode,carrier,tracking_code,postal_code,city,
+                route_zone,route_code,weight_kg,quantity,intake_source,intake_driver_id,
+                intake_scanned_at,intake_confidence,intake_status,raw_scan_code,
+                tracking_source,ocr_confidence,ocr_passes,intake_job_id,
+                recipient_name,phone,address,lat,lon,driver_id,status,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                job["organization_id"], job["work_day_id"], code, barcode, carrier, tracking or None,
+                parsed.get("postal_code") or "", parsed.get("city") or "", parsed.get("route_zone") or "",
+                parsed.get("route_code") or "", parsed.get("weight_kg"), parsed.get("quantity") or 1,
+                "camera", job["driver_id"], now_iso(), parsed.get("intake_confidence") or 0,
+                parsed.get("intake_status") or "review", json.dumps(raw_codes, ensure_ascii=False),
+                parsed.get("tracking_source") or "", parsed.get("ocr_confidence"), parsed.get("ocr_passes") or 1,
+                job_id, parsed.get("recipient_name") or "", parsed.get("phone") or "",
+                address or "PENDIENTE DE REVISIÓN", lat, lon, job["driver_id"], "pending", now_iso(),
+            ),
+        )
+        package_id = cur.lastrowid
+        db.execute(
+            """
+            INSERT INTO intake_events(
+                organization_id,work_day_id,driver_id,package_id,carrier,source,confidence,status,captured_at
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                job["organization_id"], job["work_day_id"], job["driver_id"], package_id, carrier,
+                "camera-background", parsed.get("intake_confidence") or 0,
+                parsed.get("intake_status") or "review", now_iso(),
+            ),
+        )
+        result = {
+            "package_id": package_id, "carrier": carrier, "carrier_reason": parsed.get("carrier_reason"),
+            "tracking_code": tracking, "tracking_source": parsed.get("tracking_source") or "", "barcode": barcode,
+            "recipient_name": parsed.get("recipient_name") or "", "address": address,
+            "postal_code": parsed.get("postal_code") or "", "city": parsed.get("city") or "",
+            "route_zone": parsed.get("route_zone") or "", "route_code": parsed.get("route_code") or "",
+            "weight_kg": parsed.get("weight_kg"), "quantity": parsed.get("quantity") or 1,
+            "confidence": parsed.get("intake_confidence") or 0, "intake_status": parsed.get("intake_status") or "review",
+            "profile": parsed.get("profile") or "generic_v2", "missing_required": parsed.get("missing_required") or [],
+            "detected_fields": parsed.get("detected_fields") or {}, "geocoded": lat is not None and lon is not None,
+            "geocode_status": geocode_status, "ocr_confidence": parsed.get("ocr_confidence"),
+            "ocr_passes": parsed.get("ocr_passes") or 1, "duplicate": False,
+        }
+        db.execute(
+            "UPDATE intake_jobs SET status='done',package_id=?,result_json=?,image_data=NULL,completed_at=? WHERE id=?",
+            (package_id, json.dumps(_clean_job_result(result), ensure_ascii=False), now_iso(), job_id),
+        )
+        db.commit()
+        if lat is not None and lon is not None:
+            _schedule_route_refresh(job["organization_id"], job["work_day_id"], job["driver_id"])
+    except Exception as exc:
+        if db:
+            try:
+                db.rollback()
+                db.execute(
+                    "UPDATE intake_jobs SET status='error',error_text=?,image_data=NULL,completed_at=? WHERE id=?",
+                    (str(exc)[:700], now_iso(), job_id),
+                )
+                db.commit()
+            except Exception:
+                pass
+    finally:
+        if db:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
+def _intake_job_finished(job_id, future):
+    with OCR_SCHEDULE_LOCK:
+        OCR_SCHEDULED.discard(int(job_id))
+
+
+def schedule_intake_job(job_id):
+    job_id = int(job_id)
+    with OCR_SCHEDULE_LOCK:
+        if job_id in OCR_SCHEDULED:
+            return False
+        OCR_SCHEDULED.add(job_id)
+    future = OCR_EXECUTOR.submit(_process_intake_job, job_id)
+    future.add_done_callback(lambda f, jid=job_id: _intake_job_finished(jid, f))
+    return True
+
+
+def resume_intake_jobs(work_day_id, driver_id):
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT id FROM intake_jobs
+        WHERE work_day_id=? AND driver_id=? AND status IN ('queued','processing')
+        ORDER BY id LIMIT 40
+        """, (work_day_id, driver_id)
+    ).fetchall()
+    db.close()
+    for row in rows:
+        schedule_intake_job(row["id"])
 
 
 def read_import(file_storage):
@@ -1322,6 +1607,8 @@ def driver_intake():
         db.close()
         flash("No hay una jornada activa.", "error")
         return redirect(url_for("driver_home"))
+    # Recover any queued OCR jobs after a Render restart or worker recycle.
+    resume_intake_jobs(wd["id"], session["driver_id"])
     counts = intake_carrier_counts(db, wd["id"], session["driver_id"])
     recent = db.execute(
         """
@@ -1340,102 +1627,112 @@ def driver_intake():
 @app.route("/api/driver/intake/capture", methods=["POST"])
 @login_required("driver")
 def api_driver_intake_capture():
+    """Accept the photograph quickly and return immediately; OCR continues in background."""
     db = get_db()
     wd = active_workday_for_driver(db, get_org_id())
     if not wd:
         db.close()
         return jsonify({"ok": False, "error": "No hay jornada activa"}), 409
+
     image = request.files.get("image")
-    raw_code = (request.form.get("raw_code") or "").strip()
-    manual_carrier = (request.form.get("carrier") or "").strip().lower()
-    label_text = (request.form.get("label_text") or "").strip()
-    ocr_error = None
-    if image and image.filename:
-        image_bytes = image.read()
-        if len(image_bytes) > 8 * 1024 * 1024:
-            db.close()
-            return jsonify({"ok": False, "error": "Imagen demasiado grande"}), 413
-        detected, ocr_error = google_vision_text(image_bytes)
-        if detected:
-            label_text = detected
-    parsed = parse_label_text(label_text, raw_code)
-    if manual_carrier in {"imile","ecoscooting","tipsa","agencia"}:
-        parsed["carrier"] = "tipsa" if manual_carrier == "agencia" else manual_carrier
-        parsed["carrier_reason"] = "Operadora confirmada por repartidor"
-    tracking = (parsed.get("tracking_code") or raw_code or "").strip()
-    if not tracking:
+    if not image or not image.filename:
         db.close()
-        return jsonify({"ok": False, "error": "No se pudo leer código/QR. Acerca la cámara o captura la etiqueta completa.", "ocr_error": ocr_error}), 422
-    existing = db.execute(
-        """
-        SELECT * FROM packages WHERE work_day_id=? AND (code=? OR tracking_code=? OR barcode=? OR raw_scan_code=?)
-        ORDER BY id LIMIT 1
-        """, (wd["id"], tracking, tracking, tracking, tracking)
-    ).fetchone()
-    if existing:
-        counts = intake_carrier_counts(db, wd["id"], session["driver_id"])
+        return jsonify({"ok": False, "error": "Falta la imagen de la etiqueta"}), 422
+    image_bytes = image.read()
+    if not image_bytes:
         db.close()
-        return jsonify({"ok": True, "duplicate": True, "package_id": existing["id"], "carrier": existing["carrier"] or "unknown", "tracking_code": existing["tracking_code"] or existing["code"], "counts": counts, "message": "Este paquete ya estaba registrado"})
-    address = (parsed.get("address") or "").strip()
-    lat = lon = None
-    geocode_status = "not_requested"
-    if address:
-        if os.environ.get("GOOGLE_MAPS_API_KEY", "").strip():
-            loc = geocode_google(address)
-            if loc:
-                lat, lon = loc
-                geocode_status = "ok"
-            else:
-                geocode_status = "failed"
-        else:
-            geocode_status = "not_configured"
+        return jsonify({"ok": False, "error": "Imagen vacía"}), 422
+    if len(image_bytes) > 8 * 1024 * 1024:
+        db.close()
+        return jsonify({"ok": False, "error": "Imagen demasiado grande"}), 413
+
+    raw_codes_value = request.form.get("raw_codes") or "[]"
     try:
-        cur = db.execute(
-            """
-            INSERT INTO packages(
-                organization_id,work_day_id,code,barcode,carrier,tracking_code,postal_code,city,
-                route_zone,route_code,weight_kg,quantity,intake_source,intake_driver_id,
-                intake_scanned_at,intake_confidence,intake_status,raw_scan_code,
-                recipient_name,phone,address,lat,lon,driver_id,status,created_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (get_org_id(),wd["id"],tracking,parsed.get("barcode") or tracking,parsed.get("carrier") or "unknown",tracking,
-             parsed.get("postal_code") or "",parsed.get("city") or "",parsed.get("route_zone") or "",parsed.get("route_code") or "",
-             parsed.get("weight_kg"),parsed.get("quantity") or 1,"camera",session["driver_id"],now_iso(),parsed.get("intake_confidence") or 0,
-             parsed.get("intake_status") or "review",raw_code or tracking,parsed.get("recipient_name") or "",parsed.get("phone") or "",
-             address or "PENDIENTE DE REVISIÓN",lat,lon,session["driver_id"],"pending",now_iso())
-        )
-        package_id = cur.lastrowid
-        db.execute(
-            """
-            INSERT INTO intake_events(organization_id,work_day_id,driver_id,package_id,carrier,source,confidence,status,captured_at)
-            VALUES(?,?,?,?,?,?,?,?,?)
-            """,
-            (get_org_id(),wd["id"],session["driver_id"],package_id,parsed.get("carrier") or "unknown","camera",parsed.get("intake_confidence") or 0,parsed.get("intake_status") or "review",now_iso())
-        )
-        db.commit()
-        route = {"updated": False, "reason": "Dirección sin geocodificar"}
-        if lat is not None and lon is not None:
-            route = reoptimize_after_intake(db, wd, session["driver_id"])
-            db.commit()
-        counts = intake_carrier_counts(db, wd["id"], session["driver_id"])
+        raw_codes = json.loads(raw_codes_value)
+        if not isinstance(raw_codes, list):
+            raw_codes = []
+    except Exception:
+        raw_codes = []
+    legacy_raw = (request.form.get("raw_code") or "").strip()
+    if legacy_raw and legacy_raw not in raw_codes:
+        raw_codes.insert(0, legacy_raw)
+    raw_codes = [str(x).strip()[:120] for x in raw_codes if str(x).strip()][:12]
+    carrier_hint = (request.form.get("carrier") or "").strip().lower()
+    if carrier_hint not in {"", "imile", "ecoscooting", "tipsa", "agencia"}:
+        carrier_hint = ""
+
+    cur = db.execute(
+        """
+        INSERT INTO intake_jobs(
+            organization_id,work_day_id,driver_id,status,raw_codes,carrier_hint,
+            image_data,image_mime,image_size,created_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            get_org_id(), wd["id"], session["driver_id"], "queued",
+            json.dumps(raw_codes, ensure_ascii=False), carrier_hint,
+            image_bytes, image.mimetype or "image/jpeg", len(image_bytes), now_iso(),
+        ),
+    )
+    job_id = cur.lastrowid
+    db.commit()
+    db.close()
+    schedule_intake_job(job_id)
+    return jsonify({"ok": True, "accepted": True, "job_id": job_id, "status": "queued"}), 202
+
+
+@app.route("/api/driver/intake/jobs")
+@login_required("driver")
+def api_driver_intake_jobs():
+    db = get_db()
+    wd = active_workday_for_driver(db, get_org_id())
+    if not wd:
         db.close()
-        return jsonify({
-            "ok": True,"package_id": package_id,"carrier": parsed.get("carrier") or "unknown","carrier_reason": parsed.get("carrier_reason"),
-            "tracking_code": tracking,"recipient_name": parsed.get("recipient_name") or "","address": address,"postal_code": parsed.get("postal_code") or "",
-            "route_zone": parsed.get("route_zone") or "","route_code": parsed.get("route_code") or "","weight_kg": parsed.get("weight_kg"),
-            "quantity": parsed.get("quantity") or 1,"confidence": parsed.get("intake_confidence") or 0,"intake_status": parsed.get("intake_status") or "review",
-            "profile": parsed.get("profile") or "generic_v1", "missing_required": parsed.get("missing_required") or [],
-            "detected_fields": parsed.get("detected_fields") or {}, "geocoded": lat is not None and lon is not None,
-            "geocode_status": geocode_status, "route": route,"counts": counts,"ocr_error": ocr_error,
-            "ocr_debug": (label_text[:2400] if (os.environ.get("INTAKE_OCR_DEBUG", "1").strip().lower() not in {"0","false","no"}) else "")
-        })
-    except Exception as exc:
-        db.rollback(); db.close()
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": "No hay jornada activa"}), 409
+    resume_intake_jobs(wd["id"], session["driver_id"])
+    rows = db.execute(
+        """
+        SELECT id,status,package_id,result_json,error_text,created_at,started_at,completed_at
+        FROM intake_jobs
+        WHERE work_day_id=? AND driver_id=?
+        ORDER BY id DESC LIMIT 60
+        """, (wd["id"], session["driver_id"])
+    ).fetchall()
+    stats_rows = db.execute(
+        """
+        SELECT status,COUNT(*) total FROM intake_jobs
+        WHERE work_day_id=? AND driver_id=? AND status IN ('queued','processing')
+        GROUP BY status
+        """, (wd["id"], session["driver_id"])
+    ).fetchall()
+    stats = {"queued": 0, "processing": 0}
+    for r in stats_rows:
+        stats[r["status"]] = int(r["total"])
+    counts = intake_carrier_counts(db, wd["id"], session["driver_id"])
+    db.close()
+
+    jobs = []
+    for row in rows:
+        result = {}
+        if row["result_json"]:
+            try:
+                result = json.loads(row["result_json"])
+            except Exception:
+                result = {}
+        item = {
+            "id": row["id"], "status": row["status"], "package_id": row["package_id"],
+            "error": row["error_text"] or "", "created_at": row["created_at"],
+            "completed_at": row["completed_at"], "result": result,
+        }
+        debug = _get_ocr_debug(row["id"])
+        if debug:
+            item["ocr_debug"] = debug
+        jobs.append(item)
+    return jsonify({"ok": True, "jobs": jobs, "queue": stats, "counts": counts})
 
 
 @app.route("/driver/intake/<int:package_id>/review", methods=["GET","POST"])
+
 @login_required("driver")
 def driver_intake_review(package_id):
     db = get_db()
@@ -1454,7 +1751,7 @@ def driver_intake_review(package_id):
         if address:
             loc = geocode_google(address)
             if loc: lat, lon = loc
-        intake_status = "ready" if address and tracking and lat is not None else "review"
+        intake_status = "ready" if address and tracking and carrier in {"imile","ecoscooting","tipsa"} else "review"
         db.execute(
             """
             UPDATE packages SET carrier=?,recipient_name=?,address=?,postal_code=?,route_zone=?,route_code=?,
@@ -1690,7 +1987,7 @@ def too_large(_e):
 
 if __name__ == "__main__":
     init_db()
-    print("\\nRouteOps V0.3.1.2 Embedded Vision Engine local listo en http://127.0.0.1:5000")
+    print("\\nRouteOps V0.3.1.4 Intelligent OCR Pipeline local listo en http://127.0.0.1:5000")
     print("Admin: admin@routeops.local / demo123")
     print("Repartidor: carlos / 1234")
     print(f"Zona horaria: {TIMEZONE_NAME}\\n")

@@ -28,6 +28,12 @@ services:
         value: "1"
       - key: SEED_DEMO_DATA
         value: "1"
+      - key: INTAKE_OCR_WORKERS
+        value: "2"
+      - key: OCR_MULTI_PASS
+        value: "1"
+      - key: OCR_TARGET_LONG_SIDE
+        value: "2200"
       - key: BOOTSTRAP_ADMIN_EMAIL
         value: admin@routeops.local
       - key: BOOTSTRAP_ADMIN_PASSWORD

@@ -15,7 +15,7 @@
   {% endfor %}
 </div>
 
-<section class="smart-scanner" id="smartScanner" data-capture-url="{{url_for('api_driver_intake_capture')}}" data-ocr-ready="{{1 if ocr_ready else 0}}" data-geocode-ready="{{1 if geocode_ready else 0}}" data-ocr-debug="{{1 if ocr_debug_enabled else 0}}">
+<section class="smart-scanner" id="smartScanner" data-capture-url="{{url_for('api_driver_intake_capture')}}" data-jobs-url="{{url_for('api_driver_intake_jobs')}}" data-ocr-ready="{{1 if ocr_ready else 0}}" data-geocode-ready="{{1 if geocode_ready else 0}}" data-ocr-debug="{{1 if ocr_debug_enabled else 0}}">
   <div class="smart-video-wrap" id="videoWrap">
     <video id="intakeVideo" playsinline muted></video>
     <canvas id="guideCanvas" aria-hidden="true"></canvas>
@@ -43,6 +43,18 @@
   </div>
 </section>
 
+<div class="mobile-card background-queue-card">
+  <div class="card-head"><h3>OCR en segundo plano</h3><span class="pill neutral">Continuo</span></div>
+  <div class="queue-kpis">
+    <div><strong id="queueLocal">0</strong><small>por subir</small></div>
+    <div><strong id="queueServer">0</strong><small>en cola</small></div>
+    <div><strong id="queueProcessing">0</strong><small>procesando</small></div>
+    <div><strong id="queueCompleted">0</strong><small>terminados</small></div>
+  </div>
+  <small class="diag-note">Al capturar una etiqueta puedes retirarla inmediatamente. RouteOps sube y procesa OCR mientras sigues escaneando.</small>
+  <div id="backgroundJobs" class="background-jobs"></div>
+</div>
+
 <div class="mobile-card camera-info" id="cameraInfo" hidden>
   <div><strong>Cámara</strong><small id="cameraName">—</small></div>
   <div><strong>Enfoque</strong><small id="focusInfo">Automático del dispositivo</small></div>
@@ -50,7 +62,7 @@
 </div>
 
 <div class="mobile-card vision-diagnostics" id="visionDiagnostics">
-  <div class="card-head"><h3>Diagnóstico del escáner</h3><span class="pill neutral">V0.3.1.3</span></div>
+  <div class="card-head"><h3>Diagnóstico del escáner</h3><span class="pill neutral">V0.3.1.4</span></div>
   <div class="diag-grid">
     <div><span>Motor local</span><strong class="diag-value warn" id="diagEngine">Inicializando</strong></div>
     <div><span>Cámara</span><strong class="diag-value warn" id="diagCamera">Esperando</strong></div>
@@ -92,6 +104,6 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='smart_vision.js') }}?v=0313"></script>
-<script src="{{ url_for('static', filename='smart_label_scanner.js') }}?v=0313"></script>
+<script src="{{ url_for('static', filename='smart_vision.js') }}?v=0314"></script>
+<script src="{{ url_for('static', filename='smart_label_scanner.js') }}?v=0314"></script>
 {% endblock %}

@@ -1,55 +1,45 @@
-# Deploy — RouteOps V0.3.1.2 Embedded Vision Engine
+# Deploy — RouteOps V0.3.1.4 Intelligent OCR Pipeline
 
-Se actualiza el mismo repositorio y el mismo servicio Render. No crees otra URL ni otra base de datos.
+## Recomendado para tu instalación actual
 
-## 1. GitHub
+Usa el ZIP `PATCH_ONLY`.
 
-Descomprime el ZIP y entra dentro de `RouteOps_V0.3.1.2_Embedded_Vision_Engine`.
+1. Descomprímelo.
+2. Copia **el contenido interno** sobre tu carpeta local `RouteOps`.
+3. Acepta `Reemplazar archivos en el destino`.
+4. Abre GitHub Desktop.
+5. Confirma que aparecen archivos modificados, especialmente:
+   - `app.py`
+   - `db_layer.py`
+   - `intake_engine.py`
+   - `templates/driver_intake.html`
+   - `static/smart_label_scanner.js`
+   - `static/style.css`
+   - `static/sw.js`
+6. Commit: `RouteOps V0.3.1.4 Intelligent OCR Pipeline`.
+7. `Push origin`.
+8. Espera el redeploy automático de Render.
 
-Copia **el contenido interno** a la raíz de tu repositorio RouteOps, reemplazando los archivos existentes.
+## Después del deploy
 
-Debes ver directamente en la raíz:
+Cierra completamente RouteOps/PWA en el móvil y vuelve a abrirlo para recibir el Service Worker V0.3.1.4.
 
-- `app.py`
-- `db_layer.py`
-- `intake_engine.py`
-- `templates/`
-- `static/`
-- `render.yaml`
-- `requirements.txt`
+No borres PostgreSQL y no crees otro servicio Render.
 
-No debe quedar una carpeta V0.3.1.2 conteniendo otra copia del proyecto.
+## Variables Render
 
-## 2. Archivos nuevos importantes
+Obligatoria para OCR:
 
-Confirma en GitHub:
+`GOOGLE_VISION_API_KEY=...`
 
-- `static/smart_vision.js`
-- `static/smart_label_scanner.js`
+Recomendadas:
 
-Y que `templates/driver_intake.html` ya NO contenga una URL hacia `docs.opencv.org/.../opencv.js`.
+`AUTO_OPTIMIZE_INTAKE=1`
 
-## 3. Render
+`INTAKE_OCR_WORKERS=2`
 
-Conserva:
+`OCR_MULTI_PASS=1`
 
-- `DATABASE_URL`
-- `SECRET_KEY`
-- `GOOGLE_VISION_API_KEY`
-- `AUTO_OPTIMIZE_INTAKE=1`
+`OCR_TARGET_LONG_SIDE=2200`
 
-Haz `Deploy latest commit` si Auto Deploy no arranca solo.
-
-## 4. Teléfono
-
-Cuando Render esté `Live`:
-
-1. Cierra RouteOps completamente.
-2. Abre de nuevo la URL/PWA.
-3. Entra a `Recibir`.
-4. Debe aparecer `Motor local: Integrado`.
-5. Abre cámara.
-6. `Cámara` debe pasar a `Activa`.
-7. Coloca una etiqueta delante y verifica `Seguimiento: Detectando`.
-
-Si el seguimiento no detecta esa etiqueta concreta, usa `Capturar ahora`; el OCR sigue funcionando.
+No publiques ninguna API key en GitHub.

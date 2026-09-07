@@ -185,6 +185,10 @@ CREATE TABLE IF NOT EXISTS packages (
     intake_status TEXT DEFAULT 'legacy',
     raw_scan_code TEXT,
     delivered_by_driver_id INTEGER,
+    tracking_source TEXT,
+    ocr_confidence REAL,
+    ocr_passes INTEGER DEFAULT 0,
+    intake_job_id INTEGER,
     recipient_name TEXT,
     phone TEXT,
     address TEXT NOT NULL,
@@ -285,6 +289,32 @@ CREATE TABLE IF NOT EXISTS intake_events (
     FOREIGN KEY(driver_id) REFERENCES drivers(id),
     FOREIGN KEY(package_id) REFERENCES packages(id)
 );
+
+CREATE TABLE IF NOT EXISTS intake_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    organization_id INTEGER NOT NULL,
+    work_day_id INTEGER NOT NULL,
+    driver_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    raw_codes TEXT,
+    carrier_hint TEXT,
+    image_data BLOB,
+    image_mime TEXT,
+    image_size INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    package_id INTEGER,
+    result_json TEXT,
+    error_text TEXT,
+    attempts INTEGER DEFAULT 0,
+    FOREIGN KEY(organization_id) REFERENCES organizations(id),
+    FOREIGN KEY(work_day_id) REFERENCES work_days(id),
+    FOREIGN KEY(driver_id) REFERENCES drivers(id),
+    FOREIGN KEY(package_id) REFERENCES packages(id)
+);
+CREATE INDEX IF NOT EXISTS idx_intake_jobs_driver_day ON intake_jobs(work_day_id,driver_id,id);
+CREATE INDEX IF NOT EXISTS idx_intake_jobs_status ON intake_jobs(status,id);
 CREATE INDEX IF NOT EXISTS idx_packages_workday ON packages(work_day_id);
 CREATE INDEX IF NOT EXISTS idx_packages_driver_day ON packages(work_day_id, driver_id);
 CREATE INDEX IF NOT EXISTS idx_packages_barcode ON packages(work_day_id, barcode);
@@ -354,6 +384,10 @@ CREATE TABLE IF NOT EXISTS packages (
     intake_status TEXT DEFAULT 'legacy',
     raw_scan_code TEXT,
     delivered_by_driver_id BIGINT REFERENCES drivers(id),
+    tracking_source TEXT,
+    ocr_confidence DOUBLE PRECISION,
+    ocr_passes INTEGER DEFAULT 0,
+    intake_job_id BIGINT,
     recipient_name TEXT,
     phone TEXT,
     address TEXT NOT NULL,
@@ -434,6 +468,28 @@ CREATE TABLE IF NOT EXISTS intake_events (
     status TEXT,
     captured_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS intake_jobs (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id),
+    work_day_id BIGINT NOT NULL REFERENCES work_days(id),
+    driver_id BIGINT NOT NULL REFERENCES drivers(id),
+    status TEXT NOT NULL DEFAULT 'queued',
+    raw_codes TEXT,
+    carrier_hint TEXT,
+    image_data BYTEA,
+    image_mime TEXT,
+    image_size INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    package_id BIGINT REFERENCES packages(id),
+    result_json TEXT,
+    error_text TEXT,
+    attempts INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_intake_jobs_driver_day ON intake_jobs(work_day_id,driver_id,id);
+CREATE INDEX IF NOT EXISTS idx_intake_jobs_status ON intake_jobs(status,id);
 CREATE INDEX IF NOT EXISTS idx_packages_workday ON packages(work_day_id);
 CREATE INDEX IF NOT EXISTS idx_packages_driver_day ON packages(work_day_id, driver_id);
 CREATE INDEX IF NOT EXISTS idx_packages_barcode ON packages(work_day_id, barcode);
@@ -458,6 +514,10 @@ PACKAGE_EXTRA_COLUMNS = {
     "intake_status": "TEXT DEFAULT 'legacy'",
     "raw_scan_code": "TEXT",
     "delivered_by_driver_id": "BIGINT",
+    "tracking_source": "TEXT",
+    "ocr_confidence": "DOUBLE PRECISION",
+    "ocr_passes": "INTEGER DEFAULT 0",
+    "intake_job_id": "BIGINT",
 }
 
 def ensure_package_columns(db):
@@ -472,7 +532,11 @@ def ensure_package_columns(db):
         "route_zone": "TEXT", "route_code": "TEXT", "weight_kg": "REAL", "quantity": "INTEGER DEFAULT 1",
         "intake_source": "TEXT", "intake_driver_id": "INTEGER", "intake_scanned_at": "TEXT",
         "intake_confidence": "REAL", "intake_status": "TEXT DEFAULT 'legacy'", "raw_scan_code": "TEXT",
-        "delivered_by_driver_id": "INTEGER"
+        "delivered_by_driver_id": "INTEGER",
+        "tracking_source": "TEXT",
+        "ocr_confidence": "REAL",
+        "ocr_passes": "INTEGER DEFAULT 0",
+        "intake_job_id": "INTEGER"
     }
     for name, typ in sqlite_types.items():
         if name not in existing:

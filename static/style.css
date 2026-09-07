@@ -39,3 +39,15 @@
 
 /* V0.3.1.3 OCR/parser diagnostics */
 .ocr-debug{margin-top:10px;border-top:1px solid var(--line);padding-top:9px}.ocr-debug summary{cursor:pointer;font-weight:700}.ocr-debug pre{white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;background:rgba(15,23,42,.05);padding:9px;border-radius:9px;font-size:11px;line-height:1.35}
+
+/* V0.3.1.4 — background OCR pipeline */
+.background-queue-card{border-color:#dbeafe;background:#f8fbff}
+.queue-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+.queue-kpis>div{background:#fff;border:1px solid var(--line);border-radius:11px;padding:9px;text-align:center}
+.queue-kpis strong{display:block;font-size:20px}.queue-kpis small{display:block;color:var(--muted);font-size:10px;margin-top:2px}
+.background-jobs{display:flex;flex-direction:column;margin-top:9px}
+.bg-job-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--line);min-width:0}
+.bg-job-row>div{flex:1;min-width:0}.bg-job-row strong,.bg-job-row small{display:block}.bg-job-row strong{font-size:12px}.bg-job-row small{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.job-dot{width:9px;height:9px;min-width:9px;border-radius:50%;background:#94a3b8}.job-dot.processing{background:#2563eb}.job-dot.done,.job-dot.duplicate{background:#16a34a}.job-dot.error{background:#dc2626}
+.job-status{font-size:9px;text-transform:uppercase;font-weight:850;border-radius:999px;padding:4px 6px;background:#e2e8f0;color:#475569}.job-status.processing{background:#dbeafe;color:#1d4ed8}.job-status.done,.job-status.duplicate{background:#dcfce7;color:#166534}.job-status.error{background:#fee2e2;color:#991b1b}
+@media(max-width:420px){.queue-kpis{grid-template-columns:repeat(2,1fr)}}
